@@ -2,7 +2,7 @@ import bisaLogoNegro from '../assets/bisa_fondo_negro.png';
 import bisaLogoBlanco from '../assets/bisa_fondo_blanco.png';
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getIntentos, exportToExcelAsync, importFromExcel, addTableFormat, getAllIntentosAsync } from '../utils/storage';
+import { getIntentos, importFromExcel, addTableFormat, getAllIntentosAsync } from '../utils/storage';
 import { getEstandares, saveCustomPreguntas, hasCustomPreguntas, resetPreguntas } from '../data';
 import { getLinks, saveLinks, resetLinks, DEFAULT_LINKS } from '../data/estandarLinks';
 import { getNuevoIngresoMapping, saveNuevoIngresoMapping, resetNuevoIngresoMapping, parseMappingExcel } from '../data/nuevoIngresoMapping';
@@ -143,7 +143,6 @@ export default function AdminPage() {
   const desaprobadosTotal = totalEvals - aprobadosTotal;
   const pctAprobacion = totalEvals > 0 ? Math.round((aprobadosTotal / totalEvals) * 100) : 0;
   const totalPreguntas = allEstandares.reduce((sum, e) => sum + e.preguntas.length, 0);
-  const cantNuevoIngreso = intentosNuevoIngreso.length;
 
   // ── Handlers de archivos ───────────────────────────────────────────────────
   function handleDescargarResultados() {
