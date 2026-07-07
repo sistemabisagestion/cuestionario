@@ -31,14 +31,14 @@ export default function LandingPage() {
           <div className="landing__card" onClick={() => navigate('/nuevo-ingreso')}>
             <div className="landing__card-icon">🆕</div>
             <h2>Nuevo Ingreso</h2>
-            <p>Primera vez en la plataforma</p>
+            <p>Trabajadores nuevos que se integran a la empresa</p>
           </div>
 
           {/* Usuario Antiguo */}
           <div className="landing__card" onClick={() => navigate('/register')}>
             <div className="landing__card-icon">👤</div>
             <h2>Usuario Antiguo</h2>
-            <p>Ya tengo cuenta registrada</p>
+            <p>Trabajadores vigentes que ya laboran en la empresa</p>
           </div>
 
           {/* Administrador */}
@@ -77,3 +77,4 @@ export default function LandingPage() {
     </div>
   );
 }
+
