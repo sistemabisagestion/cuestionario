@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import type { FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import bisaLogo from '../assets/bisa_fondo_blanco.png';
@@ -19,11 +19,24 @@ const DISCIPLINAS = ['Supervisión CM', 'Gestión de proyecto CM'];
 
 export default function NuevoIngresoPage() {
   const navigate = useNavigate();
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const [form, setForm] = useState({ nombre: '', unidadNegocio: '', disciplina: '', cargo: '', correo: '', dni: '' });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busquedaCargo, setBusquedaCargo] = useState('');
+  const [dropdownAbierto, setDropdownAbierto] = useState(false);
 
   const cargosFiltrados = CARGOS.filter(c => c.toLowerCase().includes(busquedaCargo.toLowerCase()));
+
+  // Cerrar el dropdown de forma segura si se hace clic fuera del buscador
+  useEffect(() => {
+    function handleClickAfuera(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setDropdownAbierto(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickAfuera);
+    return () => document.removeEventListener('mousedown', handleClickAfuera);
+  }, []);
 
   function validate() {
     const errs: Record<string, string> = {};
@@ -40,7 +53,7 @@ export default function NuevoIngresoPage() {
     e.preventDefault();
     const errs = validate();
     if (Object.keys(errs).length > 0) { setErrors(errs); return; }
-    // Guardar en sessionStorage para el flujo de nuevo ingreso
+    
     sessionStorage.setItem('bisa-nuevo-ingreso', JSON.stringify({
       nombre: form.nombre.trim(),
       unidadNegocio: form.unidadNegocio,
@@ -87,35 +100,43 @@ export default function NuevoIngresoPage() {
             {errors.disciplina && <div className="error">{errors.disciplina}</div>}
           </div>
 
-          <div className="form-group">
+          <div className="form-group" ref={dropdownRef} style={{ position: 'relative' }}>
             <label>Cargo</label>
             <input
               type="text"
               placeholder="Buscar o seleccionar cargo..."
               value={busquedaCargo}
+              onFocus={() => setDropdownAbierto(true)}
+              onClick={() => setDropdownAbierto(true)}
               onChange={e => {
                 setBusquedaCargo(e.target.value);
-                // Si el texto no coincide exactamente con un cargo, limpiar selección
+                setDropdownAbierto(true);
                 if (!CARGOS.includes(e.target.value)) {
                   setForm({ ...form, cargo: '' });
                 }
               }}
-              style={{ borderRadius: cargosFiltrados.length > 0 && busquedaCargo && !form.cargo ? '6px 6px 0 0' : undefined }}
+              style={{ borderRadius: dropdownAbierto && !form.cargo && cargosFiltrados.length > 0 ? '6px 6px 0 0' : undefined }}
             />
-            {/* Dropdown de sugerencias solo cuando hay búsqueda activa y no hay cargo seleccionado */}
-            {busquedaCargo && !form.cargo && cargosFiltrados.length > 0 && (
+            
+            {/* Dropdown de opciones automático al enfocar o buscar */}
+            {dropdownAbierto && !form.cargo && cargosFiltrados.length > 0 && (
               <div style={{
                 border: '1px solid #d1d5db', borderTop: 'none', borderRadius: '0 0 6px 6px',
                 maxHeight: 180, overflowY: 'auto', background: '#fff',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 10, position: 'relative',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 999, position: 'absolute',
+                width: '100%', left: 0, top: '100%'
               }}>
                 {cargosFiltrados.map(c => (
                   <div
                     key={c}
-                    onClick={() => { setForm({ ...form, cargo: c }); setBusquedaCargo(c); }}
+                    onClick={() => { 
+                      setForm({ ...form, cargo: c }); 
+                      setBusquedaCargo(c); 
+                      setDropdownAbierto(false); 
+                    }}
                     style={{
                       padding: '10px 14px', cursor: 'pointer', fontSize: 14,
-                      borderBottom: '1px solid #f0f0f0',
+                      borderBottom: '1px solid #f0f0f0', background: '#fff', color: '#333'
                     }}
                     onMouseEnter={e => (e.currentTarget.style.background = '#f5f5f5')}
                     onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
