@@ -5,6 +5,9 @@ import { getEstandaresByCargo as getNuevoIngresoCargos } from '../data/nuevoIngr
 import { pickRandomQuestions } from '../utils/randomize';
 import type { Pregunta, RespuestaQuiz } from '../types';
 
+// Conexión oficial con tu archivo de configuración de Supabase
+import { supabase } from '../utils/supabase';
+
 const OPCIONES = ['A', 'B', 'C', 'D', 'E'] as const;
 const TIEMPO_POR_PREGUNTA = 45;
 const TOTAL_PREGUNTAS = 20;
@@ -69,7 +72,6 @@ export default function NuevoIngresoQuizPage() {
       if (est.preguntas && Array.isArray(est.preguntas)) {
         est.preguntas.forEach(p => {
           poolPreguntas.push(p);
-          // Corregido: Se utiliza la propiedad real 'estandar_nombre' del tipo Estandar
           tempCategorias.push(est.estandar_nombre || est.estandar_codigo);
         });
       }
@@ -94,7 +96,7 @@ export default function NuevoIngresoQuizPage() {
     setCategoriasMap(mapFinal);
   }, [navigate]);
 
-  const finishQuiz = useCallback(() => {
+  const finishQuiz = useCallback(async () => {
     if (timerRef.current) clearInterval(timerRef.current);
 
     let buenas = 0;
@@ -116,6 +118,41 @@ export default function NuevoIngresoQuizPage() {
     incrementarIntentosGlobal(usuario.dni);
     const nuevoIntentoNum = getIntentosGlobal(usuario.dni);
 
+    // Enviar datos en tiempo real a Supabase
+    try {
+      const uuidUnico = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
+      
+      const { error } = await supabase
+        .from('intentos')
+        .insert([
+          {
+            id: uuidUnico,
+            tipo: 'NUEVO INGRESO',
+            fecha: new Date().toISOString(),
+            nombre: usuario.nombre,
+            dni: usuario.dni,
+            unidad_negocio: usuario.unidadNegocio || usuario.unidad_negocio || '-',
+            disciplina: usuario.disciplina || '-',
+            cargo: usuario.cargo,
+            estandar_codigo: 'EVALUACION-GLOBAL',
+            estandar_nombre: 'Evaluación de Diagnóstico General',
+            intento_num: nuevoIntentoNum,
+            puntaje: buenas,
+            total_preguntas: questions.length,
+            respuestas: respuestasDetalle
+          }
+        ]);
+
+      if (error) {
+        console.error('❌ Error al guardar en Supabase:', error.message, error.details);
+      } else {
+        console.log('✅ ¡Registro insertado exitosamente en Supabase!');
+      }
+    } catch (supabaseError) {
+      console.error('❌ Error de conexión con Supabase:', supabaseError);
+    }
+
+    // Mantener almacenamiento local secundario
     try {
       const rawRes = localStorage.getItem(LS_KEY_RESULTADOS);
       const dataRes = rawRes ? JSON.parse(rawRes) : [];
