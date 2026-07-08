@@ -6,6 +6,9 @@ import { pickRandomQuestions } from '../utils/randomize';
 import { saveIntentoAsync, generateId, getIntentosByDniAsync } from '../utils/storage';
 import type { Pregunta, RespuestaQuiz } from '../types';
 
+// Conexión oficial directa con Supabase
+import { supabase } from '../utils/supabase';
+
 const OPCIONES = ['A', 'B', 'C', 'D', 'E'] as const;
 const TIEMPO_POR_PREGUNTA = 45;
 const MAX_INTENTOS = 2;
@@ -39,12 +42,31 @@ export default function QuizPage() {
   const [leaveAction, setLeaveAction] = useState<(() => void) | null>(null);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const intentoIdRef = useRef<string>(generateId()); 
+  const intentoIdRef = useRef<string>(generateId());
   const initialSaveDone = useRef(false);
   const isFinishing = useRef(false);
 
-  // Obtener el tipo de usuario dinámico desde el contexto o inferir por el código de examen
+  // Determinar el tipo de usuario de forma dinámica
   const userTipo = user?.tipo || (decodeURIComponent(codigo || '') === 'EVALUACION-GLOBAL' ? 'NUEVO INGRESO' : 'USUARIO ANTIGUO');
+
+  // Determinar el nombre correcto del examen según las reglas de negocio
+  const nombreExamenFinal = userTipo === 'NUEVO INGRESO' ? 'Evaluación de Diagnóstico General' : estandarNombre;
+
+  useEffect(() => {
+    if (!codigo || !user) return;
+
+    const attemptKey = `bisa-quiz-attempt-${user.dni}-${decodeURIComponent(codigo)}`;
+    const existingId = window.sessionStorage.getItem(attemptKey);
+
+    if (existingId) {
+      intentoIdRef.current = existingId;
+      return;
+    }
+
+    const freshId = generateId();
+    intentoIdRef.current = freshId;
+    window.sessionStorage.setItem(attemptKey, freshId);
+  }, [codigo, user]);
 
   useEffect(() => {
     if (!codigo) return;
@@ -73,21 +95,58 @@ export default function QuizPage() {
     }
   }, [codigo, navigate, user]);
 
-  // 1. Quemar el intento con "Nota 0" apenas inicie (Guardando el tipo de usuario)
+  // Bloque de guardado inicial con "Nota 0" apenas inicia la prueba (Sincronizado directo a Supabase)
   useEffect(() => {
-    if (quizStarted && preguntas.length > 0 && user && !initialSaveDone.current) {
+    if (quizStarted && preguntas.length > 0 && user && !initialSaveDone.current && estandarNombre) {
+      const attemptKey = `bisa-quiz-attempt-${user.dni}-${decodeURIComponent(codigo!)}`;
+      const savedKey = `${attemptKey}:saved`;
+
+      if (window.sessionStorage.getItem(savedKey)) {
+        initialSaveDone.current = true;
+        return;
+      }
+
       initialSaveDone.current = true;
+      window.sessionStorage.setItem(savedKey, '1');
+
+      // 1. Guardado Local Secundario
       saveIntentoAsync({
         id: intentoIdRef.current, dni: user.dni, nombre: user.nombre, correo: user.correo || '',
         unidadNegocio: user.unidadNegocio || '', disciplina: user.disciplina || '', cargo: user.cargo,
-        estandarCodigo: decodeURIComponent(codigo!), estandarNombre,
+        estandarCodigo: decodeURIComponent(codigo!), estandarNombre: nombreExamenFinal,
         fecha: new Date().toISOString(), puntaje: 0, totalPreguntas: preguntas.length, respuestas: [],
         tipo: userTipo, 
       });
-    }
-  }, [quizStarted, preguntas, user, codigo, estandarNombre, userTipo]);
 
-  // 2. Alerta del navegador si intenta presionar F5 o cerrar pestaña
+      // 2. Inserción directa en tiempo real a Supabase (Formato snake_case correcto)
+      supabase
+        .from('intentos')
+        .upsert([
+          {
+            id: intentoIdRef.current,
+            tipo: userTipo,
+            fecha: new Date().toISOString(),
+            nombre: user.nombre,
+            dni: user.dni,
+            unidad_negocio: user.unidadNegocio || (user as any).unidad_negocio || '-',
+            disciplina: user.disciplina || '-',
+            cargo: user.cargo,
+            estandar_codigo: decodeURIComponent(codigo!),
+            estandar_nombre: nombreExamenFinal,
+            intento_num: intentoNum || 1,
+            puntaje: 0,
+            total_preguntas: preguntas.length,
+            respuestas: []
+          }
+        ])
+        .then(({ error }) => {
+          if (error) console.error('❌ Error Supabase (Nota 0):', error.message);
+          else console.log('✅ Supabase: Intento inicial registrado con Nota 0');
+        });
+    }
+  }, [quizStarted, preguntas, user, codigo, estandarNombre, userTipo, nombreExamenFinal, intentoNum]);
+
+  // Alerta del navegador si intenta presionar F5 o cerrar pestaña
   useEffect(() => {
     if (!quizStarted) return;
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -99,7 +158,7 @@ export default function QuizPage() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [quizStarted]);
 
-  // 3. Interceptar clics en el menú superior con Modal Moderno
+  // Interceptar clics en el menú superior con Modal Moderno
   useEffect(() => {
     if (!quizStarted) return;
     const handleGlobalClick = (e: MouseEvent) => {
@@ -130,7 +189,7 @@ export default function QuizPage() {
     return () => document.removeEventListener('click', handleGlobalClick, { capture: true });
   }, [quizStarted]);
 
-  // 4. Interceptar el botón de "Atrás" del navegador con Modal Moderno
+  // Interceptar el botón de "Atrás" del navegador con Modal Moderno
   useEffect(() => {
     if (!quizStarted) return;
     
@@ -212,14 +271,54 @@ export default function QuizPage() {
     const correctas = respuestas.filter(r => r.esCorrecta).length;
     const puntaje = Math.round((correctas / preguntas.length) * 20);
 
-    // Guardado final incluyendo explícitamente el tipo de usuario correcto
+    // Mapeo adaptado con llaves snake_case idénticas a Supabase
+    const respuestasDetalleSupabase = respuestas.map(r => ({
+      pregunta: r.pregunta,
+      respuesta_usuario: r.respuestaUsuario,
+      respuesta_correcta: r.respuestaCorrecta,
+      es_correcta: r.esCorrecta
+    }));
+
+    // 1. Guardado Final Local
     await saveIntentoAsync({
       id: intentoIdRef.current, dni: user.dni, nombre: user.nombre, correo: user.correo || '',
       unidadNegocio: user.unidadNegocio || '', disciplina: user.disciplina || '', cargo: user.cargo,
-      estandarCodigo: decodeURIComponent(codigo!), estandarNombre,
+      estandarCodigo: decodeURIComponent(codigo!), estandarNombre: nombreExamenFinal,
       fecha: new Date().toISOString(), puntaje, totalPreguntas: preguntas.length, respuestas,
       tipo: userTipo, 
     });
+
+    // 2. Guardado Final Directo en Supabase (Sobreescribe la nota 0 inicial gracias al id único)
+    try {
+      const { error } = await supabase
+        .from('intentos')
+        .upsert([
+          {
+            id: intentoIdRef.current,
+            tipo: userTipo,
+            fecha: new Date().toISOString(),
+            nombre: user.nombre,
+            dni: user.dni,
+            unidad_negocio: user.unidadNegocio || (user as any).unidad_negocio || '-',
+            disciplina: user.disciplina || '-',
+            cargo: user.cargo,
+            estandar_codigo: decodeURIComponent(codigo!),
+            estandar_nombre: nombreExamenFinal,
+            intento_num: intentoNum || 1,
+            puntaje: puntaje,
+            total_preguntas: preguntas.length,
+            respuestas: respuestasDetalleSupabase
+          }
+        ]);
+
+      if (error) {
+        console.error('❌ Error al actualizar puntuación final en Supabase:', error.message);
+      } else {
+        console.log('✅ ¡Examen de Usuario Antiguo guardado con éxito en Supabase!');
+      }
+    } catch (supabaseError) {
+      console.error('❌ Error crítico de conexión con Supabase:', supabaseError);
+    }
 
     navigate(`/results/${intentoIdRef.current}`);
   }
@@ -285,7 +384,7 @@ export default function QuizPage() {
 
       <div id="quiz-container" style={{ maxWidth: 800, margin: '0 auto' }}>
         <div style={{ marginBottom: 12, fontSize: 14, color: 'var(--color-gray)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontWeight: 500 }}>{estandarNombre}</span>
+          <span style={{ fontWeight: 500 }}>{nombreExamenFinal}</span>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
             {intentoNum > 0 && (
               <span style={{ fontWeight: 700, fontSize: 18, color: '#E6007E' }}>
