@@ -80,12 +80,12 @@ export default function AdminPage() {
   const [intentosNuevoIngreso, setIntentosNuevoIngreso] = useState<any[]>([]);
   const allEstandares = useMemo(() => getEstandares(), [refreshKey]);
 
-  // Cargar intentos de usuario antiguo desde Supabase/localStorage
+  // Cargar intentos globales desde la base de datos (Supabase)
   const loadIntentos = useCallback(() => {
     getAllIntentosAsync().then(setIntentosAntiguos);
   }, []);
 
-  // Cargar intentos de nuevo ingreso desde localStorage
+  // Cargar intentos redundantes de nuevo ingreso local
   const loadNuevoIngreso = useCallback(() => {
     try {
       const raw = localStorage.getItem('bisa-nuevo-ingreso-resultados');
@@ -98,18 +98,32 @@ export default function AdminPage() {
     loadNuevoIngreso();
   }, [loadIntentos, loadNuevoIngreso, refreshKey]);
 
-  // ── Combinar todos los intentos (CORREGIDO PARA EVITAR DUPLICADOS) ───────────
+  // ── Combinar todos los intentos (FILTRADO AVANZADO ANTI-DUPLICADOS) ───────────
   const todosIntentos = useMemo(() => {
-    // 1. Mapeamos lo que viene de la base de datos respetando su columna "tipo" nativa
-    const deBaseDatos = intentosAntiguos.map(i => ({
-      ...i,
-      tipo: (i as any).tipo === 'NUEVO INGRESO' ? 'NUEVO INGRESO' : 'USUARIO ANTIGUO'
-    }));
+    // 1. Mapeamos lo que viene de Supabase tal cual está en la Base de Datos
+    const deBaseDatos = intentosAntiguos.map(i => {
+      const estCodigo = i.estandarCodigo || (i as any).estandar_codigo || '';
+      const rawTipo = String((i as any).tipo || '').toUpperCase();
+      
+      // DETECCIÓN ROBUSTA: Si el código es EVALUACION-GLOBAL o contiene 'NUEVO', es un onboarding.
+      const esNuevoIngreso = estCodigo === 'EVALUACION-GLOBAL' || rawTipo.includes('NUEVO');
 
-    // Creamos un set con los IDs ya existentes para no repetirlos
+      return {
+        ...i,
+        tipo: esNuevoIngreso ? 'NUEVO INGRESO' : 'USUARIO ANTIGUO',
+        unidadNegocio: i.unidadNegocio || (i as any).unidad_negocio || '',
+        estandarCodigo: estCodigo,
+        estandarNombre: i.estandarNombre || (i as any).estandar_nombre || '',
+        intentoNum: (i as any).intento_num || (i as any).intentoNum || 1,
+        totalPreguntas: i.totalPreguntas || (i as any).total_preguntas || 20
+      };
+    });
+
+    // Creamos sets de control combinados (por ID y por la combinación DNI + Código de examen)
     const idsExistentes = new Set(deBaseDatos.map(i => i.id));
+    const clavesExistentes = new Set(deBaseDatos.map(i => `${i.dni}-${i.estandarCodigo}`));
 
-    // 2. Mapeamos lo local, pero filtramos si es que ya se encuentra descargado de la BD
+    // 2. Mapeamos lo local solo si NO existe ya guardado formalmente en Supabase
     const deLocalstorage = intentosNuevoIngreso
       .map((ni: any) => ({
         id: ni.id || String(Math.random()),
@@ -121,22 +135,25 @@ export default function AdminPage() {
         estandarCodigo: ni.estandar || 'EVALUACION-GLOBAL',
         estandarNombre: ni.estandarNombre || 'Evaluación de Diagnóstico General',
         fecha: ni.fecha,
+        textFecha: ni.fecha,
         puntaje: ni.puntaje,
         totalPreguntas: ni.totalPreguntas || 20,
         respuestas: ni.respuestas || [],
         tipo: 'NUEVO INGRESO',
         intentoNum: ni.intentoNum || 1,
       }))
-      .filter(ni => !idsExistentes.has(ni.id)); // <-- EVITA DUPLICAR CON LOCALHOST
+      .filter(ni => !idsExistentes.has(ni.id) && !clavesExistentes.has(`${ni.dni}-${ni.estandarCodigo}`));
 
     return [...deBaseDatos, ...deLocalstorage];
   }, [intentosAntiguos, intentosNuevoIngreso]);
 
-  // ── Filtrado ───────────────────────────────────────────────────────────────
+  // ── Filtrado por Pestañas y Estados ──────────────────────────────────────────
   const filtered = useMemo(() => todosIntentos.filter((i: any) => {
-    // Umbral de aprobación: >13 para nuevo ingreso (nota/20), >12 para antiguo
     const esNuevo = i.tipo === 'NUEVO INGRESO';
+    
+    // Regla de negocio para aprobación: Nuevo Ingreso aprueba con >13 (Nota 14), Antiguo con >12 (Nota 13)
     const aprobado = esNuevo ? i.puntaje > 13 : i.puntaje > 12;
+
     if (filtroEstado === 'aprobado' && !aprobado) return false;
     if (filtroEstado === 'desaprobado' && aprobado) return false;
     if (filtroTipo === 'antiguo' && esNuevo) return false;
@@ -148,7 +165,7 @@ export default function AdminPage() {
     [...filtered].sort((a: any, b: any) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()),
     [filtered]);
 
-  // ── KPIs ───────────────────────────────────────────────────────────────────
+  // ── KPIs Dinámicos basados en la Base de Datos Real ──────────────────────────
   const totalEvals = todosIntentos.length;
   const aprobadosTotal = todosIntentos.filter((i: any) =>
     i.tipo === 'NUEVO INGRESO' ? i.puntaje > 13 : i.puntaje > 12
@@ -449,7 +466,7 @@ export default function AdminPage() {
                       const esNuevo = intento.tipo === 'NUEVO INGRESO';
                       const aprobado = esNuevo ? intento.puntaje > 13 : intento.puntaje > 12;
                       const fecha = new Date(intento.fecha).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-                      const intentoNum = intento.intentoNum ?? todosIntentos.filter((i: any) => i.dni === intento.dni && i.estandarCodigo === intento.estandarCodigo && new Date(i.fecha) <= new Date(intento.fecha)).length;
+                      const intentoNum = intento.intentoNum || 1;
 
                       const td = { padding: '10px 14px', fontSize: 13, verticalAlign: 'top' as const };
 
@@ -469,7 +486,7 @@ export default function AdminPage() {
                           <td style={td}>
                             {esNuevo ? (
                               <span style={{ display: 'inline-block', background: '#f0f4ff', color: '#1e3a8a', borderRadius: 6, padding: '3px 8px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' as const }}>
-                                {intento.estandarNombre || 'Evaluación conjunta'}
+                                {intento.estandarNombre || 'Evaluación de Diagnóstico General'}
                               </span>
                             ) : (
                               <>
