@@ -23,6 +23,7 @@ export interface Usuario {
   cargo: string;
   correo?: string;
   dni: string;
+  tipo?: string; // <-- Agregado para soportar el flujo dinámico
 }
 
 export interface RespuestaQuiz {
@@ -47,6 +48,7 @@ export interface Intento {
   puntaje: number;
   totalPreguntas: number;
   respuestas: RespuestaQuiz[];
+  tipo?: string; // <-- Agregado para guardar correctamente en Supabase
 }
 
 export interface QuizData {
