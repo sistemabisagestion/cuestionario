@@ -34,7 +34,7 @@ export default function QuizPage() {
   const [timeLeft, setTimeLeft] = useState(TIEMPO_POR_PREGUNTA);
   const [quizStarted, setQuizStarted] = useState(false);
   
-  // NUEVO: Estados para controlar el modal moderno de abandono
+  // Estados para controlar el modal moderno de abandono
   const [showLeaveModal, setShowLeaveModal] = useState(false);
   const [leaveAction, setLeaveAction] = useState<(() => void) | null>(null);
 
@@ -42,6 +42,9 @@ export default function QuizPage() {
   const intentoIdRef = useRef<string>(generateId()); 
   const initialSaveDone = useRef(false);
   const isFinishing = useRef(false);
+
+  // Obtener el tipo de usuario dinámico desde el contexto o inferir por el código de examen
+  const userTipo = user?.tipo || (decodeURIComponent(codigo || '') === 'EVALUACION-GLOBAL' ? 'NUEVO INGRESO' : 'USUARIO ANTIGUO');
 
   useEffect(() => {
     if (!codigo) return;
@@ -70,7 +73,7 @@ export default function QuizPage() {
     }
   }, [codigo, navigate, user]);
 
-  // 1. Quemar el intento con "Nota 0" apenas inicie
+  // 1. Quemar el intento con "Nota 0" apenas inicie (Guardando el tipo de usuario)
   useEffect(() => {
     if (quizStarted && preguntas.length > 0 && user && !initialSaveDone.current) {
       initialSaveDone.current = true;
@@ -79,11 +82,12 @@ export default function QuizPage() {
         unidadNegocio: user.unidadNegocio || '', disciplina: user.disciplina || '', cargo: user.cargo,
         estandarCodigo: decodeURIComponent(codigo!), estandarNombre,
         fecha: new Date().toISOString(), puntaje: 0, totalPreguntas: preguntas.length, respuestas: [],
+        tipo: userTipo, 
       });
     }
-  }, [quizStarted, preguntas, user, codigo, estandarNombre]);
+  }, [quizStarted, preguntas, user, codigo, estandarNombre, userTipo]);
 
-  // 2. Alerta del navegador si intenta presionar F5 o cerrar pestaña (obligatorio por seguridad del navegador)
+  // 2. Alerta del navegador si intenta presionar F5 o cerrar pestaña
   useEffect(() => {
     if (!quizStarted) return;
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -105,7 +109,6 @@ export default function QuizPage() {
       const quizContainer = document.getElementById('quiz-container');
       const leaveModal = document.getElementById('leave-warning-modal');
 
-      // Si hace clic dentro del examen o dentro del modal, lo ignoramos
       if ((quizContainer && quizContainer.contains(target)) || (leaveModal && leaveModal.contains(target))) {
         return;
       }
@@ -115,10 +118,9 @@ export default function QuizPage() {
         e.preventDefault();
         e.stopPropagation();
 
-        // Guardamos la acción que el usuario intentaba hacer y abrimos el modal
         setLeaveAction(() => () => {
-          isFinishing.current = true; // Apagamos los escudos
-          clickable.click(); // Ejecutamos su clic original
+          isFinishing.current = true; 
+          clickable.click(); 
         });
         setShowLeaveModal(true);
       }
@@ -137,11 +139,11 @@ export default function QuizPage() {
     const handlePopState = () => {
       if (isFinishing.current) return;
 
-      window.history.pushState(null, '', window.location.href); // Frenamos el retroceso
+      window.history.pushState(null, '', window.location.href); 
 
       setLeaveAction(() => () => {
         isFinishing.current = true;
-        window.history.back(); // Si acepta, lo dejamos ir
+        window.history.back(); 
       });
       setShowLeaveModal(true);
     };
@@ -196,7 +198,7 @@ export default function QuizPage() {
   async function finishQuiz() {
     if (!user || !codigo) return;
     
-    isFinishing.current = true; // Desactivar alarmas
+    isFinishing.current = true; 
 
     const respuestas: RespuestaQuiz[] = preguntas.map((p, i) => {
       const userAnswer = answers[i] || '';
@@ -210,11 +212,13 @@ export default function QuizPage() {
     const correctas = respuestas.filter(r => r.esCorrecta).length;
     const puntaje = Math.round((correctas / preguntas.length) * 20);
 
+    // Guardado final incluyendo explícitamente el tipo de usuario correcto
     await saveIntentoAsync({
       id: intentoIdRef.current, dni: user.dni, nombre: user.nombre, correo: user.correo || '',
       unidadNegocio: user.unidadNegocio || '', disciplina: user.disciplina || '', cargo: user.cargo,
       estandarCodigo: decodeURIComponent(codigo!), estandarNombre,
       fecha: new Date().toISOString(), puntaje, totalPreguntas: preguntas.length, respuestas,
+      tipo: userTipo, 
     });
 
     navigate(`/results/${intentoIdRef.current}`);
@@ -224,7 +228,7 @@ export default function QuizPage() {
   const WarningModal = () => (
     <div id="leave-warning-modal" style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-      background: 'rgba(29, 38, 43, 0.85)', zIndex: 9999, // Fondo oscuro estilo BISA
+      background: 'rgba(29, 38, 43, 0.85)', zIndex: 9999, 
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       padding: '20px', backdropFilter: 'blur(5px)',
       opacity: showLeaveModal ? 1 : 0, transition: 'opacity 0.3s ease'
@@ -277,7 +281,6 @@ export default function QuizPage() {
 
   return (
     <>
-      {/* SE RENDERIZA EL MODAL SI SE ACTIVA */}
       {showLeaveModal && <WarningModal />}
 
       <div id="quiz-container" style={{ maxWidth: 800, margin: '0 auto' }}>
