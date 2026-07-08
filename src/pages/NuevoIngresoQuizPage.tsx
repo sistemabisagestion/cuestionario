@@ -48,6 +48,7 @@ export default function NuevoIngresoQuizPage() {
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [quizStarted, setQuizStarted] = useState(false);
   const [timeLeft, setTimeLeft] = useState(TIEMPO_POR_PREGUNTA);
+  const [enviando, setEnviando] = useState(false); // Estado para bloquear doble envío
 
   const [categoriasMap, setCategoriasMap] = useState<Record<number, string>>({});
 
@@ -97,6 +98,10 @@ export default function NuevoIngresoQuizPage() {
   }, [navigate]);
 
   const finishQuiz = useCallback(async () => {
+    // Si ya se está procesando un envío, bloqueamos ejecuciones duplicadas
+    if (enviando) return;
+    setEnviando(true);
+
     if (timerRef.current) clearInterval(timerRef.current);
 
     let buenas = 0;
@@ -178,7 +183,7 @@ export default function NuevoIngresoQuizPage() {
     }));
 
     navigate('/nuevo-ingreso/resultado');
-  }, [questions, answers, usuario, navigate]);
+  }, [questions, answers, usuario, navigate, enviando]);
 
   const handleTimeOut = useCallback(() => {
     setAnswers(prev => ({ ...prev, [current]: '' }));
@@ -238,10 +243,10 @@ export default function NuevoIngresoQuizPage() {
         </div>
 
         <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-          <button className="btn btn--secondary" onClick={() => navigate('/nuevo-ingreso/standards')}>
+          <button className="btn btn--secondary" disabled={enviando} onClick={() => navigate('/nuevo-ingreso/standards')}>
             Volver
           </button>
-          <button className="btn btn--primary" disabled={bloqueado} onClick={() => setQuizStarted(true)}>
+          <button className="btn btn--primary" disabled={bloqueado || enviando} onClick={() => setQuizStarted(true)}>
             Comenzar Evaluación
           </button>
         </div>
@@ -254,6 +259,7 @@ export default function NuevoIngresoQuizPage() {
   const isLast = current === questions.length - 1;
 
   const selectOption = (letra: string) => {
+    if (enviando) return; // Bloquear cambios si ya está guardando
     setAnswers(prev => ({ ...prev, [current]: letra }));
   };
 
@@ -295,7 +301,7 @@ export default function NuevoIngresoQuizPage() {
         <div className="question-card__options">
           {OPCIONES.map(letra => (
             getOptionText(pregunta, letra) && (
-              <button key={letra} className={`option-btn ${answers[current] === letra ? 'option-btn--selected' : ''}`}
+              <button key={letra} disabled={enviando} className={`option-btn ${answers[current] === letra ? 'option-btn--selected' : ''}`}
                 onClick={() => selectOption(letra)}>
                 <span className="option-btn__letter">{letra}</span>
                 <span>{getOptionText(pregunta, letra)}</span>
@@ -314,8 +320,8 @@ export default function NuevoIngresoQuizPage() {
             Siguiente
           </button>
         ) : (
-          <button className="btn btn--primary" onClick={finishQuiz}>
-            Finalizar Evaluación
+          <button className="btn btn--primary" disabled={enviando} onClick={finishQuiz}>
+            {enviando ? 'Guardando...' : 'Finalizar Evaluación'}
           </button>
         )}
       </div>
