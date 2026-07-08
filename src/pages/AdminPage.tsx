@@ -98,26 +98,39 @@ export default function AdminPage() {
     loadNuevoIngreso();
   }, [loadIntentos, loadNuevoIngreso, refreshKey]);
 
-  // ── Combinar todos los intentos ────────────────────────────────────────────
-  const todosIntentos = useMemo(() => [
-    ...intentosAntiguos.map(i => ({ ...i, tipo: (i as any).tipo || 'USUARIO ANTIGUO' })),
-    ...intentosNuevoIngreso.map((ni: any) => ({
-      id: ni.id || String(Math.random()),
-      dni: ni.dni,
-      nombre: ni.nombre,
-      cargo: ni.cargo,
-      unidadNegocio: ni.unidadNegocio || '',
-      disciplina: ni.disciplina || '',
-      estandarCodigo: ni.estandar || 'EVALUACION-GLOBAL',
-      estandarNombre: ni.estandarNombre || 'Evaluación Global (Onboarding)',
-      fecha: ni.fecha,
-      puntaje: ni.puntaje,
-      totalPreguntas: ni.totalPreguntas || 20,
-      respuestas: ni.respuestas || [],
-      tipo: 'NUEVO INGRESO',
-      intentoNum: ni.intentoNum || 1,
-    })),
-  ], [intentosAntiguos, intentosNuevoIngreso]);
+  // ── Combinar todos los intentos (CORREGIDO PARA EVITAR DUPLICADOS) ───────────
+  const todosIntentos = useMemo(() => {
+    // 1. Mapeamos lo que viene de la base de datos respetando su columna "tipo" nativa
+    const deBaseDatos = intentosAntiguos.map(i => ({
+      ...i,
+      tipo: (i as any).tipo === 'NUEVO INGRESO' ? 'NUEVO INGRESO' : 'USUARIO ANTIGUO'
+    }));
+
+    // Creamos un set con los IDs ya existentes para no repetirlos
+    const idsExistentes = new Set(deBaseDatos.map(i => i.id));
+
+    // 2. Mapeamos lo local, pero filtramos si es que ya se encuentra descargado de la BD
+    const deLocalstorage = intentosNuevoIngreso
+      .map((ni: any) => ({
+        id: ni.id || String(Math.random()),
+        dni: ni.dni,
+        nombre: ni.nombre,
+        cargo: ni.cargo,
+        unidadNegocio: ni.unidadNegocio || '',
+        disciplina: ni.disciplina || '',
+        estandarCodigo: ni.estandar || 'EVALUACION-GLOBAL',
+        estandarNombre: ni.estandarNombre || 'Evaluación de Diagnóstico General',
+        fecha: ni.fecha,
+        puntaje: ni.puntaje,
+        totalPreguntas: ni.totalPreguntas || 20,
+        respuestas: ni.respuestas || [],
+        tipo: 'NUEVO INGRESO',
+        intentoNum: ni.intentoNum || 1,
+      }))
+      .filter(ni => !idsExistentes.has(ni.id)); // <-- EVITA DUPLICAR CON LOCALHOST
+
+    return [...deBaseDatos, ...deLocalstorage];
+  }, [intentosAntiguos, intentosNuevoIngreso]);
 
   // ── Filtrado ───────────────────────────────────────────────────────────────
   const filtered = useMemo(() => todosIntentos.filter((i: any) => {
@@ -147,7 +160,6 @@ export default function AdminPage() {
   // ── Handlers de archivos ───────────────────────────────────────────────────
   function handleDescargarResultados() {
     import('xlsx-js-style').then(XLSX => {
-      // Combinar todos los intentos para la exportación
       const rows = todosIntentos.map((i: any) => ({
         'Tipo': i.tipo || 'USUARIO ANTIGUO',
         'ID': i.id,
@@ -457,7 +469,7 @@ export default function AdminPage() {
                           <td style={td}>
                             {esNuevo ? (
                               <span style={{ display: 'inline-block', background: '#f0f4ff', color: '#1e3a8a', borderRadius: 6, padding: '3px 8px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' as const }}>
-                                Evaluación conjunta
+                                {intento.estandarNombre || 'Evaluación conjunta'}
                               </span>
                             ) : (
                               <>
