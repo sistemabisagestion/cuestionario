@@ -1,10 +1,44 @@
 // Mapping de cargo → estándares para usuarios de Nuevo Ingreso
-// Editable desde el panel de administración (subir Excel)
+// Editable desde el panel de administración (subir Excel) o hardcodeado por defecto
 
 export interface NuevoIngresoLink {
   cargo: string;
   estandares: string[];
 }
+
+// ── 1. MATRIZ PREDETERMINADA FIJA CORREGIDA (8 ESTÁNDARES) ────────────────────
+// Sincronizado exactamente con los filtros reales de tu última captura
+const MATRIZ_PREDETERMINADA: NuevoIngresoLink[] = [
+  {
+    cargo: "Ing. Superv. CQA Jr.",
+    estandares: [
+      "CL-ES-GOP-SGI-04",
+      "CL-ES-GOP-SGI-19",
+      "CL-ES-GOP-SGI-21",
+      "CL-ES-GOP-SGI-23",
+      "CL-ES-GOP-SGI-24",
+      "CL-ES-GOP-SGI-25",
+      "CL-ES-GOP-SGI-26",
+      "CL-ES-GOP-SGI-27"
+    ]
+  },
+  {
+    cargo: "Gerente de proyecto",
+    estandares: [
+      "CL-ES-GOP-SGI-03",
+      "CL-ES-GOP-SGI-04",
+      "CL-ES-GOP-SGI-05"
+    ]
+  },
+  {
+    cargo: "Jefe Proyecto",
+    estandares: [
+      "CL-ES-GOP-SGI-03",
+      "CL-ES-GOP-SGI-04",
+      "CL-ES-GOP-SGI-05"
+    ]
+  }
+];
 
 const LS_KEY = 'bisa-nuevo-ingreso-mapping';
 
@@ -13,7 +47,8 @@ export function getNuevoIngresoMapping(): NuevoIngresoLink[] {
     const raw = localStorage.getItem(LS_KEY);
     if (raw) return JSON.parse(raw);
   } catch { /* fallback */ }
-  return [];
+  
+  return MATRIZ_PREDETERMINADA;
 }
 
 export function saveNuevoIngresoMapping(mapping: NuevoIngresoLink[]): void {
@@ -46,7 +81,7 @@ export async function parseMappingExcel(file: File): Promise<NuevoIngresoLink[]>
           const cargo = String(row['Cargo'] || '').trim();
           const estandar = String(row['Estándar'] || row['Estandar'] || '').trim();
           if (!cargo || !estandar) continue;
-          // Extraer solo el código (ej: "CL-ES-GOP-SGI-03 - Nombre" → "CL-ES-GOP-SGI-03")
+          
           const codigo = estandar.split(' - ')[0].trim();
           if (!map.has(cargo)) map.set(cargo, new Set());
           map.get(cargo)!.add(codigo);
