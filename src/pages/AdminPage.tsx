@@ -2,7 +2,7 @@ import bisaLogoNegro from '../assets/bisa_fondo_negro.png';
 import bisaLogoBlanco from '../assets/bisa_fondo_blanco.png';
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getIntentos, importFromExcel, addTableFormat, getAllIntentosAsync } from '../utils/storage';
+import { importFromExcel, addTableFormat, getAllIntentosAsync } from '../utils/storage';
 import { getEstandares, saveCustomPreguntas, hasCustomPreguntas, resetPreguntas } from '../data';
 import { getLinks, saveLinks, resetLinks, DEFAULT_LINKS } from '../data/estandarLinks';
 import { getNuevoIngresoMapping, saveNuevoIngresoMapping, resetNuevoIngresoMapping, parseMappingExcel } from '../data/nuevoIngresoMapping';
@@ -76,36 +76,26 @@ export default function AdminPage() {
   const linksInputRef = useRef<HTMLInputElement>(null);
   const matrizInputRef = useRef<HTMLInputElement>(null);
 
-  const [intentosAntiguos, setIntentosAntiguos] = useState<Intento[]>(() => getIntentos());
-  const [intentosNuevoIngreso, setIntentosNuevoIngreso] = useState<any[]>([]);
+  // Solamente manejamos intentos provenientes directamente de Supabase
+  const [intentosSupabase, setIntentosSupabase] = useState<Intento[]>([]);
   const allEstandares = useMemo(() => getEstandares(), [refreshKey]);
 
-  // Cargar intentos globales desde la base de datos (Supabase)
+  // Cargar intentos globales desde la base de datos de Supabase
   const loadIntentos = useCallback(() => {
-    getAllIntentosAsync().then(setIntentosAntiguos);
-  }, []);
-
-  // Cargar intentos redundantes de nuevo ingreso local
-  const loadNuevoIngreso = useCallback(() => {
-    try {
-      const raw = localStorage.getItem('bisa-nuevo-ingreso-resultados');
-      if (raw) setIntentosNuevoIngreso(JSON.parse(raw));
-    } catch { }
+    getAllIntentosAsync().then(setIntentosSupabase);
   }, []);
 
   useEffect(() => {
     loadIntentos();
-    loadNuevoIngreso();
-  }, [loadIntentos, loadNuevoIngreso, refreshKey]);
+  }, [loadIntentos, refreshKey]);
 
-  // ── Combinar todos los intentos (FILTRADO AVANZADO ANTI-DUPLICADOS) ───────────
+  // ── Mapeo robusto a partir de los datos reales de Supabase (Cero LocalStorage) ─
   const todosIntentos = useMemo(() => {
-    // 1. Mapeamos lo que viene de Supabase tal cual está en la Base de Datos
-    const deBaseDatos = intentosAntiguos.map(i => {
+    return intentosSupabase.map(i => {
       const estCodigo = i.estandarCodigo || (i as any).estandar_codigo || '';
       const rawTipo = String((i as any).tipo || '').toUpperCase();
       
-      // DETECCIÓN ROBUSTA: Si el código es EVALUACION-GLOBAL o contiene 'NUEVO', es un onboarding.
+      // Detección robusta de si el registro pertenece a Onboarding / Nuevo Ingreso
       const esNuevoIngreso = estCodigo === 'EVALUACION-GLOBAL' || rawTipo.includes('NUEVO');
 
       return {
@@ -118,34 +108,7 @@ export default function AdminPage() {
         totalPreguntas: i.totalPreguntas || (i as any).total_preguntas || 20
       };
     });
-
-    // Creamos sets de control combinados (por ID y por la combinación DNI + Código de examen)
-    const idsExistentes = new Set(deBaseDatos.map(i => i.id));
-    const clavesExistentes = new Set(deBaseDatos.map(i => `${i.dni}-${i.estandarCodigo}`));
-
-    // 2. Mapeamos lo local solo si NO existe ya guardado formalmente en Supabase
-    const deLocalstorage = intentosNuevoIngreso
-      .map((ni: any) => ({
-        id: ni.id || String(Math.random()),
-        dni: ni.dni,
-        nombre: ni.nombre,
-        cargo: ni.cargo,
-        unidadNegocio: ni.unidadNegocio || '',
-        disciplina: ni.disciplina || '',
-        estandarCodigo: ni.estandar || 'EVALUACION-GLOBAL',
-        estandarNombre: ni.estandarNombre || 'Evaluación de Diagnóstico General',
-        fecha: ni.fecha,
-        textFecha: ni.fecha,
-        puntaje: ni.puntaje,
-        totalPreguntas: ni.totalPreguntas || 20,
-        respuestas: ni.respuestas || [],
-        tipo: 'NUEVO INGRESO',
-        intentoNum: ni.intentoNum || 1,
-      }))
-      .filter(ni => !idsExistentes.has(ni.id) && !clavesExistentes.has(`${ni.dni}-${ni.estandarCodigo}`));
-
-    return [...deBaseDatos, ...deLocalstorage];
-  }, [intentosAntiguos, intentosNuevoIngreso]);
+  }, [intentosSupabase]);
 
   // ── Filtrado por Pestañas y Estados ──────────────────────────────────────────
   const filtered = useMemo(() => todosIntentos.filter((i: any) => {
@@ -203,7 +166,7 @@ export default function AdminPage() {
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Evaluaciones');
       XLSX.writeFile(wb, `bisa-evaluaciones-${new Date().toISOString().slice(0, 10)}.xlsx`);
-      setMensaje({ tipo: 'ok', texto: `${rows.length} evaluaciones exportadas (usuarios antiguos + nuevo ingreso).` });
+      setMensaje({ tipo: 'ok', texto: `${rows.length} evaluaciones exportadas.` });
     });
   }
 
