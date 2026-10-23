@@ -1,22 +1,12 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Usuario } from '../types';
 import { getCurrentUser, setCurrentUser as saveUser, clearCurrentUser } from '../utils/storage';
-
-interface UserContextType {
-  user: Usuario | null;
-  login: (user: Usuario) => void;
-  logout: () => void;
-}
-
-const UserContext = createContext<UserContextType | null>(null);
+import { UserContext } from './useUser';
 
 export function UserProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<Usuario | null>(() => getCurrentUser());
-
-  useEffect(() => {
-    setUser(getCurrentUser());
-  }, []);
+  // Read once from storage when the app starts.
+  const [user, setUser] = useState<Usuario | null>(getCurrentUser);
 
   const login = (u: Usuario) => {
     saveUser(u);
@@ -33,10 +23,4 @@ export function UserProvider({ children }: { children: ReactNode }) {
       {children}
     </UserContext.Provider>
   );
-}
-
-export function useUser(): UserContextType {
-  const ctx = useContext(UserContext);
-  if (!ctx) throw new Error('useUser must be used within UserProvider');
-  return ctx;
 }

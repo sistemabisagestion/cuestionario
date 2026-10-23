@@ -1,8 +1,9 @@
+import { useMatrix } from '../utils/useMatrix';
+import { codesForCargo } from '../../shared/matrices.mjs';
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useUser } from '../context/UserContext';
-import { getEstandarByCodigo } from '../data';
-import { getLinksByCodigo } from '../data/estandarLinks';
+import { useUser } from '../context/useUser';
+import { useDataset } from '../utils/useDataset';
 import { getIntentosByDni } from '../utils/storage';
 
 const MAX_INTENTOS = 2;
@@ -12,16 +13,22 @@ type PanelType = 'none' | 'sharepoint' | 'quiz';
 export default function EstandarDetailPage() {
   const { codigo } = useParams<{ codigo: string }>();
   const navigate = useNavigate();
+  const { snapshot, error: matrixError, loading: matrixLoading } = useMatrix('personal-antiguo');
   const { user } = useUser();
+  const bank = useDataset('preguntas');
+  const linkData = useDataset('links');
 
   // Estados para controlar qué panel se abre
   const [panelType, setPanelType] = useState<PanelType>('none');
   const [pendingUrl, setPendingUrl] = useState<string>('');
 
   const codigoDecoded = decodeURIComponent(codigo || '');
-  const estandar = getEstandarByCodigo(codigoDecoded);
-  const links = getLinksByCodigo(codigoDecoded);
+  const estandar = bank.snapshot?.data.find(e => e.estandar_codigo === codigoDecoded);
+  const links = linkData.snapshot?.data[codigoDecoded] ?? null;
 
+  if (matrixLoading || matrixError) return <p role="status">{matrixError || 'Consultando matriz vigente…'}</p>;
+  if (bank.loading || linkData.loading || bank.error || linkData.error) return <p role="status">{bank.error || linkData.error || 'Consultando información publicada…'}</p>;
+  if (!snapshot || !codesForCargo(snapshot.mapping, user?.cargo || '').includes(decodeURIComponent(codigo || ''))) return <p role="alert">Este estándar no está asignado a tu cargo en la matriz correspondiente. Contacta al administrador.</p>;
   if (!estandar) {
     navigate('/standards');
     return null;

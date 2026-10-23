@@ -1,26 +1,30 @@
+import { useMatrix } from '../utils/useMatrix';
+import { codesForCargo } from '../../shared/matrices.mjs';
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getEstandarByCodigo } from '../data';
-import { getLinksByCodigo } from '../data/estandarLinks';
+import { useDataset } from '../utils/useDataset';
+import { readNuevoIngresoUser } from '../utils/storage';
 
 
 
 export default function NuevoIngresoDetailPage() {
   const { codigo } = useParams<{ codigo: string }>();
   const navigate = useNavigate();
-  const [usuario, setUsuario] = useState<any>(null);
+  const { snapshot, error: matrixError, loading: matrixLoading } = useMatrix('nuevo-ingreso');
+  const [usuario] = useState(readNuevoIngresoUser);
+  const bank = useDataset('preguntas');
+  const linkData = useDataset('links');
 
-  useEffect(() => {
-    const raw = sessionStorage.getItem('bisa-nuevo-ingreso');
-    if (!raw) { navigate('/nuevo-ingreso'); return; }
-    setUsuario(JSON.parse(raw));
-  }, [navigate]);
+  useEffect(() => { if (!usuario) navigate('/nuevo-ingreso'); }, [usuario, navigate]);
 
+  if (matrixLoading || matrixError) return <p role="status">{matrixError || 'Consultando matriz vigente…'}</p>;
+  if (!snapshot || !codesForCargo(snapshot.mapping, usuario?.cargo || '').includes(decodeURIComponent(codigo || ''))) return <p role="alert">Este estándar no está asignado a tu cargo en la matriz correspondiente. Contacta al administrador.</p>;
+  if (bank.loading || linkData.loading || bank.error || linkData.error) return <p role="status">{bank.error || linkData.error || 'Consultando información publicada…'}</p>;
   if (!usuario || !codigo) return null;
 
   const codigoDecoded = decodeURIComponent(codigo);
-  const estandar = getEstandarByCodigo(codigoDecoded);
-  const links = getLinksByCodigo(codigoDecoded);
+  const estandar = bank.snapshot?.data.find(e => e.estandar_codigo === codigoDecoded);
+  const links = linkData.snapshot?.data[codigoDecoded] ?? null;
 
   if (!estandar) { navigate('/nuevo-ingreso/standards'); return null; }
 

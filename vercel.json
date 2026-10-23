@@ -1,8 +1,12 @@
 {
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
+  "git": {
+    "deploymentEnabled": {
+      "integracion-bisaquiz-hybrid-premium": false
     }
+  },
+  "routes": [
+    { "handle": "filesystem" },
+    { "src": "/api/.*", "status": 404 },
+    { "src": "/.*", "dest": "/index.html" }
   ]
 }

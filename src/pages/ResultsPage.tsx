@@ -1,5 +1,7 @@
 import { useParams, useNavigate } from 'react-router-dom';
-import { getIntentoById } from '../utils/storage';
+import { getIntentoById, getIntentosByDni } from '../utils/storage';
+
+const MAX_INTENTOS = 2;
 
 function getScoreMessage(puntaje: number): string {
   if (puntaje >= 18) return 'Excelente dominio del estándar';
@@ -33,6 +35,8 @@ export default function ResultsPage() {
   }
 
   const codigoCorto = intento.estandarCodigo.replace('CL-ES-GOP-', '');
+  // Rule in force: two attempts per standard (also enforced by the server).
+  const intentosAgotados = getIntentosByDni(intento.dni).filter(i => i.estandarCodigo === intento.estandarCodigo).length >= MAX_INTENTOS;
 
   return (
     <>
@@ -52,7 +56,7 @@ export default function ResultsPage() {
         </div>
 
         <div className="results-summary__actions">
-          {intento.puntaje > 12 ? (
+          {!intentosAgotados ? (
             <button
               className="btn btn--primary"
               onClick={() => navigate(`/quiz/${encodeURIComponent(intento.estandarCodigo)}`)}
@@ -65,7 +69,7 @@ export default function ResultsPage() {
               disabled
               style={{ opacity: 0.5, cursor: 'not-allowed' }}
             >
-              Pendiente de aprobación
+              Sin intentos disponibles
             </button>
           )}
           <button

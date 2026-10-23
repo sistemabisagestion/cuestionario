@@ -1,13 +1,19 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useUser } from '../context/UserContext';
-import { getEstandaresByCargo } from '../data';
+import { useUser } from '../context/useUser';
+import { useDataset } from '../utils/useDataset';
+import { useMatrix } from '../utils/useMatrix';
+import { codesForCargo } from '../../shared/matrices.mjs';
 import { getIntentosByDniAsync } from '../utils/storage';
 import type { Intento } from '../types';
 
 const MAX_INTENTOS = 2;
 
 export default function SelectStandardPage() {
+  const { snapshot, error: matrixError, loading: matrixLoading } = useMatrix('personal-antiguo');
+  const bank = useDataset('preguntas');
+  const error = matrixError || bank.error;
+  const loading = matrixLoading || bank.loading;
   const navigate = useNavigate();
   const { user } = useUser();
   const [intentos, setIntentos] = useState<Intento[]>([]);
@@ -26,7 +32,8 @@ export default function SelectStandardPage() {
     return { bloqueado, numIntentos, mejor, aprobado };
   }
 
-  const estandaresFiltrados = user ? getEstandaresByCargo(user.cargo) : [];
+  const codes = user && snapshot ? codesForCargo(snapshot.mapping, user.cargo) : [];
+  const estandaresFiltrados = (bank.snapshot?.data ?? []).filter(est => codes.includes(est.estandar_codigo));
 
   return (
     <>
@@ -35,6 +42,7 @@ export default function SelectStandardPage() {
         {user ? `${estandaresFiltrados.length} estándares asignados a: ${user.cargo}` : 'Cargando...'}
       </p>
 
+      {(error || loading || estandaresFiltrados.length === 0) && <p role="status">{error || (loading ? 'Consultando matriz vigente…' : 'No hay estándares asignados a tu cargo en la Matriz de Personal Antiguo. Contacta al administrador.')}</p>}
       <div className="standards-grid">
         {estandaresFiltrados.map(est => {
           const { bloqueado, numIntentos, mejor, aprobado } = getEstadoEstandar(est.estandar_codigo);

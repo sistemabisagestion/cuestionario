@@ -1,114 +1,61 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getEstandares } from '../data';
-import { getEstandaresByCargo as getNuevoIngresoCargos } from '../data/nuevoIngresoMapping';
-import { pickRandomQuestions } from '../utils/randomize';
+import { loadDataset, loadDatasetVersion } from '../utils/datasets';
+import { QUESTION_MS, clearQuizState, drawKeys, entriesFor, newQuizState, preparing, questionPool, readQuizState, remainingSeconds, resumeQuiz, saveQuizState } from '../utils/quizSession';
+import type { PoolEntry, QuizState } from '../utils/quizSession';
+import { assignedCodes } from '../utils/matrices';
 import type { Pregunta, RespuestaQuiz } from '../types';
 
-// Conexión oficial con tu archivo de configuración de Supabase
-import { supabase } from '../utils/supabase';
+// Persistencia local y sincronización mediante la API del servidor.
+import { getIntentosByDniAsync, readNuevoIngresoUser, saveIntentoAsync, startAttemptAsync } from '../utils/storage';
 
 const OPCIONES = ['A', 'B', 'C', 'D', 'E'] as const;
-const TIEMPO_POR_PREGUNTA = 45;
+const TIEMPO_POR_PREGUNTA = QUESTION_MS / 1000;
 const TOTAL_PREGUNTAS = 20;
 const MAX_INTENTOS = 2;
-const LS_KEY_INTENTOS_GLOBAL = 'bisa-nuevo-ingreso-intentos-global';
 const LS_KEY_RESULTADOS = 'bisa-nuevo-ingreso-resultados';
+// Attempts are counted from the stored records (server; local copy when offline). The server
+// enforces the same limit when the evaluation starts.
+const EVALUACION = 'EVALUACION-GLOBAL';
 
-function getIntentosGlobal(dni: string): number {
-  try {
-    const raw = localStorage.getItem(LS_KEY_INTENTOS_GLOBAL);
-    if (!raw) return 0;
-    const data = JSON.parse(raw) as { dni: string; count: number }[];
-    return data.find(d => d.dni === dni)?.count ?? 0;
-  } catch { return 0; }
-}
-
-function incrementarIntentosGlobal(dni: string): void {
-  try {
-    const raw = localStorage.getItem(LS_KEY_INTENTOS_GLOBAL);
-    const data: { dni: string; count: number }[] = raw ? JSON.parse(raw) : [];
-    const idx = data.findIndex(d => d.dni === dni);
-    if (idx >= 0) {
-      data[idx].count += 1;
-    } else {
-      data.push({ dni, count: 1 });
-    }
-    localStorage.setItem(LS_KEY_INTENTOS_GLOBAL, JSON.stringify(data));
-  } catch (e) {
-    console.error('Error al guardar intentos', e);
-  }
-}
+type Prepared = { kind: 'pool'; pool: PoolEntry[]; bankVersion: string; codigos: string[]; previos: number } | { kind: 'resume'; state: QuizState; entries: PoolEntry[] } | { kind: 'empty' };
 
 export default function NuevoIngresoQuizPage() {
   const navigate = useNavigate();
-  const [usuario, setUsuario] = useState<any>(null);
-  const [questions, setQuestions] = useState<Pregunta[]>([]);
-  const [current, setCurrent] = useState(0);
-  const [answers, setAnswers] = useState<Record<number, string>>({});
-  const [quizStarted, setQuizStarted] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(TIEMPO_POR_PREGUNTA);
+  const [matrixError, setMatrixError] = useState('');
+  const [usuario] = useState(readNuevoIngresoUser);
+  // Bank of the assigned standards (questions are drawn only when the evaluation starts).
+  const [prepared, setPrepared] = useState<Extract<Prepared, { kind: 'pool' }> | null>(null);
+  // Persisted attempt (sessionStorage): questions by key, answers, position and deadline.
+  const [quiz, setQuiz] = useState<QuizState | null>(null);
+  const [entries, setEntries] = useState<PoolEntry[]>([]);
+  const [now, setNow] = useState(() => Date.now());
   const [enviando, setEnviando] = useState(false); // Estado para bloquear doble envío
+  const finishing = useRef(false);
 
-  const [categoriasMap, setCategoriasMap] = useState<Record<number, string>>({});
+  const sessionKey = usuario ? `bisa-ni-quiz-${usuario.dni}` : '';
+  const questions: Pregunta[] = entries.map(entry => entry.pregunta);
+  const quizStarted = !!quiz && entries.length > 0;
+  const current = quiz?.actual ?? 0;
+  const answers = quiz?.respuestas ?? {};
+  const timeLeft = quiz ? remainingSeconds(quiz, now) : TIEMPO_POR_PREGUNTA;
 
-  const timerRef = useRef<any>(null);
+  const update = useCallback((next: QuizState) => { saveQuizState(sessionKey, next); setQuiz(next); }, [sessionKey]);
 
-  useEffect(() => {
-    const raw = sessionStorage.getItem('bisa-nuevo-ingreso');
-    if (!raw) { navigate('/nuevo-ingreso'); return; }
-    const user = JSON.parse(raw);
-    setUsuario(user);
-
-    const codigos = getNuevoIngresoCargos(user.cargo);
-    const todos = getEstandares();
-    const filtrados = codigos.length > 0
-      ? todos.filter(e => codigos.includes(e.estandar_codigo))
-      : todos;
-
-    const poolPreguntas: Pregunta[] = [];
-    const tempCategorias: string[] = [];
-
-    filtrados.forEach(est => {
-      if (est.preguntas && Array.isArray(est.preguntas)) {
-        est.preguntas.forEach(p => {
-          poolPreguntas.push(p);
-          tempCategorias.push(est.estandar_nombre || est.estandar_codigo);
-        });
-      }
-    });
-
-    if (poolPreguntas.length === 0) {
-      alert('No hay preguntas disponibles para los estándares de este cargo.');
-      navigate('/nuevo-ingreso/standards');
-      return;
-    }
-
-    const seleccionadas = pickRandomQuestions(poolPreguntas, TOTAL_PREGUNTAS);
-    setQuestions(seleccionadas);
-
-    const mapFinal: Record<number, string> = {};
-    seleccionadas.forEach((selQuestion, index) => {
-      const originalIdx = poolPreguntas.findIndex(p => p.id === selQuestion.id);
-      if (originalIdx !== -1) {
-        mapFinal[index] = tempCategorias[originalIdx];
-      }
-    });
-    setCategoriasMap(mapFinal);
-  }, [navigate]);
-
-  const finishQuiz = useCallback(async () => {
+  const finishQuiz = useCallback(async (state: QuizState, selected: PoolEntry[]) => {
     // Si ya se está procesando un envío, bloqueamos ejecuciones duplicadas
-    if (enviando) return;
+    if (!usuario || finishing.current) return;
+    finishing.current = true;
     setEnviando(true);
-
-    if (timerRef.current) clearInterval(timerRef.current);
+    // The attempt number was assigned by the server when the evaluation started.
+    const finalState = state;
+    saveQuizState(sessionKey, { ...finalState, estado: 'finalizando' });
 
     let buenas = 0;
     const respuestasDetalle: RespuestaQuiz[] = [];
 
-    questions.forEach((p, idx) => {
-      const elegida = answers[idx] || '';
+    selected.forEach(({ pregunta: p }, idx) => {
+      const elegida = finalState.respuestas[idx] || '';
       const esCorrecta = elegida === p.respuesta_correcta;
       if (esCorrecta) buenas++;
 
@@ -120,42 +67,16 @@ export default function NuevoIngresoQuizPage() {
       } as unknown as RespuestaQuiz);
     });
 
-    incrementarIntentosGlobal(usuario.dni);
-    const nuevoIntentoNum = getIntentosGlobal(usuario.dni);
-
-    // Enviar datos en tiempo real a Supabase
-    try {
-      const uuidUnico = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
-      
-      const { error } = await supabase
-        .from('intentos')
-        .insert([
-          {
-            id: uuidUnico,
-            tipo: 'NUEVO INGRESO',
-            fecha: new Date().toISOString(),
-            nombre: usuario.nombre,
-            dni: usuario.dni,
-            unidad_negocio: usuario.unidadNegocio || usuario.unidad_negocio || '-',
-            disciplina: usuario.disciplina || '-',
-            cargo: usuario.cargo,
-            estandar_codigo: 'EVALUACION-GLOBAL',
-            estandar_nombre: 'Evaluación de Diagnóstico General',
-            intento_num: nuevoIntentoNum,
-            puntaje: buenas,
-            total_preguntas: questions.length,
-            respuestas: respuestasDetalle
-          }
-        ]);
-
-      if (error) {
-        console.error('❌ Error al guardar en Supabase:', error.message, error.details);
-      } else {
-        console.log('✅ ¡Registro insertado exitosamente en Supabase!');
-      }
-    } catch (supabaseError) {
-      console.error('❌ Error de conexión con Supabase:', supabaseError);
-    }
+    // Mismo id del intento en cada reintento: sin duplicados si la red falla.
+    await saveIntentoAsync({
+      id: finalState.attemptId, ticket: finalState.ticket, tipo: 'NUEVO INGRESO', fecha: new Date().toISOString(),
+      nombre: usuario.nombre, dni: usuario.dni, correo: usuario.correo || '',
+      unidadNegocio: usuario.unidadNegocio || usuario.unidad_negocio || '-',
+      disciplina: usuario.disciplina || '-', cargo: usuario.cargo,
+      estandarCodigo: EVALUACION, estandarNombre: 'Evaluación de Diagnóstico General',
+      intentoNum: finalState.intentoNum || 1, puntaje: buenas, totalPreguntas: selected.length,
+      respuestas: respuestasDetalle,
+    });
 
     // Mantener almacenamiento local secundario
     try {
@@ -166,7 +87,7 @@ export default function NuevoIngresoQuizPage() {
         nombre: usuario.nombre,
         cargo: usuario.cargo,
         puntaje: buenas,
-        total: questions.length,
+        total: selected.length,
         fecha: new Date().toISOString()
       });
       localStorage.setItem(LS_KEY_RESULTADOS, JSON.stringify(dataRes));
@@ -176,49 +97,94 @@ export default function NuevoIngresoQuizPage() {
 
     sessionStorage.setItem('bisa-ni-resultado', JSON.stringify({
       puntaje: buenas,
-      total: questions.length,
-      intentoNum: nuevoIntentoNum,
+      total: selected.length,
+      intentoNum: finalState.intentoNum || 1,
       estandarNombre: 'Evaluación de Diagnóstico General',
       respuestas: respuestasDetalle
     }));
 
+    // Released only once the result is stored locally and queued: the next attempt gets a new id.
+    clearQuizState(sessionKey);
     navigate('/nuevo-ingreso/resultado');
-  }, [questions, answers, usuario, navigate, enviando]);
-
-  const handleTimeOut = useCallback(() => {
-    setAnswers(prev => ({ ...prev, [current]: '' }));
-    if (current < questions.length - 1) {
-      setCurrent(c => c + 1);
-    } else {
-      finishQuiz();
-    }
-  }, [current, questions.length, finishQuiz]);
+  }, [usuario, sessionKey, navigate]);
 
   useEffect(() => {
-    if (!quizStarted) return;
+    if (!usuario) { navigate('/nuevo-ingreso'); return; }
+    let active = true;
+    // A reload resumes the stored attempt with the exact bank version it started with.
+    const prepare = preparing(sessionKey, async (): Promise<Prepared> => {
+      const saved = readQuizState(sessionKey, usuario.dni);
+      if (saved) {
+        const bank = await loadDatasetVersion('preguntas', saved.bankVersion);
+        const restored = entriesFor(questionPool(bank.data.filter(e => saved.estandares.includes(e.estandar_codigo))), saved.keys);
+        if (!restored) throw new Error('No se pudo recuperar la evaluación en curso.');
+        return { kind: 'resume', state: saved, entries: restored };
+      }
+      const [codigos, bank, registros] = await Promise.all([assignedCodes('nuevo-ingreso', usuario.cargo), loadDataset('preguntas'), getIntentosByDniAsync(usuario.dni)]);
+      const pool = questionPool(bank.data.filter(e => codigos.includes(e.estandar_codigo)));
+      const previos = registros.filter(i => i.estandarCodigo === EVALUACION).length;
+      return pool.length ? { kind: 'pool', pool, bankVersion: bank.version, codigos, previos } : { kind: 'empty' };
+    });
+    prepare.then(result => {
+      if (!active) return;
+      if (result.kind === 'empty') {
+        alert('No hay preguntas disponibles para los estándares de este cargo.');
+        navigate('/nuevo-ingreso/standards');
+      } else if (result.kind === 'pool') {
+        setPrepared(result);
+      } else {
+        // Time that passed while the page was closed counts: an expired question stays unanswered.
+        const resumed = resumeQuiz(result.state);
+        const respuestas = { ...resumed.state.respuestas };
+        for (const index of resumed.expired) respuestas[index] = '';
+        const state = { ...resumed.state, respuestas };
+        setEntries(result.entries);
+        update(state);
+        if (resumed.finished) void finishQuiz(state, result.entries);
+      }
+    }).catch(error => {
+      if (active) setMatrixError(error instanceof Error && error.message ? `No se pudo preparar la evaluación: ${error.message}` : 'No se pudo consultar la Matriz de Nuevo Ingreso o el Banco de Preguntas. Vuelve al listado e intenta nuevamente.');
+    });
+    return () => { active = false; };
+  }, [usuario, sessionKey, navigate, update, finishQuiz]);
 
-    setTimeLeft(TIEMPO_POR_PREGUNTA);
+  // Starting: the questions are drawn once and the server starts the attempt (id + clock).
+  async function startQuiz() {
+    if (!usuario || !prepared || enviando) return;
+    setEnviando(true);
+    try {
+      const keys = drawKeys(prepared.pool, TOTAL_PREGUNTAS);
+      // The server refuses a third attempt and assigns the attempt number from its records.
+      const attempt = await startAttemptAsync(usuario.dni, EVALUACION, keys.length);
+      const state = newQuizState({ dni: usuario.dni, tipo: 'NUEVO INGRESO', cargo: usuario.cargo, estandares: prepared.codigos, bankVersion: prepared.bankVersion, intentoNum: attempt.intento_num, keys }, attempt);
+      setEntries(entriesFor(prepared.pool, keys)!);
+      update(state);
+    } catch (error) {
+      setMatrixError(error instanceof Error && error.message ? `No se pudo iniciar la evaluación: ${error.message}` : 'No se pudo iniciar la evaluación. Intenta nuevamente.');
+    } finally { setEnviando(false); }
+  }
 
-    timerRef.current = setInterval(() => {
-      setTimeLeft(t => {
-        if (t <= 1) {
-          clearInterval(timerRef.current);
-          handleTimeOut();
-          return 0;
-        }
-        return t - 1;
-      });
-    }, 1000);
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+  // Temporizador: el tiempo restante se calcula con la hora límite guardada, no con un contador.
+  useEffect(() => {
+    if (!quiz || quiz.estado !== 'en-curso' || !entries.length) return;
+    const tick = () => {
+      const time = Date.now();
+      setNow(time);
+      if (time < quiz.vencePregunta || finishing.current) return;
+      // Tiempo agotado: la pregunta queda sin responder.
+      const timedOut = { ...quiz, respuestas: { ...quiz.respuestas, [quiz.actual]: '' } };
+      if (quiz.actual >= entries.length - 1) void finishQuiz(timedOut, entries);
+      else update({ ...timedOut, actual: quiz.actual + 1, vencePregunta: Math.min(quiz.vencePregunta + QUESTION_MS, quiz.limite) });
     };
-  }, [current, quizStarted, handleTimeOut]);
+    const timer = setInterval(tick, 250);
+    return () => clearInterval(timer);
+  }, [quiz, entries, update, finishQuiz]);
 
-  if (!usuario || questions.length === 0) return null;
+  if (matrixError) return <p role="alert">{matrixError}</p>;
+  if (!usuario || (!quizStarted && !prepared)) return <p role="status">Consultando matriz vigente…</p>;
 
   if (!quizStarted) {
-    const intentosGlobales = getIntentosGlobal(usuario.dni);
+    const intentosGlobales = prepared?.previos ?? 0;
     const bloqueado = intentosGlobales >= MAX_INTENTOS;
 
     return (
@@ -235,7 +201,7 @@ export default function NuevoIngresoQuizPage() {
             <strong>Evaluación:</strong> Diagnóstico de Competencias Técnicas
           </div>
           <div style={{ fontSize: 14, color: '#4A5568', marginBottom: 8 }}>
-            <strong>Cantidad de reactivos:</strong> {questions.length} preguntas aleatorias
+            <strong>Cantidad de reactivos:</strong> {Math.min(TOTAL_PREGUNTAS, prepared?.pool.length ?? 0)} preguntas aleatorias
           </div>
           <div style={{ fontSize: 14, color: '#4A5568' }}>
             <strong>Intento actual:</strong> Intento {intentosGlobales + 1} de {MAX_INTENTOS}
@@ -246,7 +212,7 @@ export default function NuevoIngresoQuizPage() {
           <button className="btn btn--secondary" disabled={enviando} onClick={() => navigate('/nuevo-ingreso/standards')}>
             Volver
           </button>
-          <button className="btn btn--primary" disabled={bloqueado || enviando} onClick={() => setQuizStarted(true)}>
+          <button className="btn btn--primary" disabled={bloqueado || enviando} onClick={() => void startQuiz()}>
             Comenzar Evaluación
           </button>
         </div>
@@ -255,12 +221,13 @@ export default function NuevoIngresoQuizPage() {
   }
 
   const pregunta = questions[current];
-  const categoriaTexto = categoriasMap[current] || 'Estándar Técnico';
+  // Category of this exact question (standard code + id), not of another one with the same number.
+  const categoriaTexto = entries[current]?.categoria || 'Estándar Técnico';
   const isLast = current === questions.length - 1;
 
   const selectOption = (letra: string) => {
-    if (enviando) return; // Bloquear cambios si ya está guardando
-    setAnswers(prev => ({ ...prev, [current]: letra }));
+    if (enviando || !quiz) return; // Bloquear cambios si ya está guardando
+    update({ ...quiz, respuestas: { ...quiz.respuestas, [quiz.actual]: letra } });
   };
 
   const getOptionText = (p: Pregunta, letra: string) => {
@@ -314,13 +281,12 @@ export default function NuevoIngresoQuizPage() {
       <div className="quiz-nav" style={{ justifyContent: 'flex-end' }}>
         {!isLast ? (
           <button className="btn btn--primary" onClick={() => {
-            if (timerRef.current) clearInterval(timerRef.current);
-            setCurrent(c => c + 1);
+            if (quiz && !enviando) update({ ...quiz, actual: quiz.actual + 1, vencePregunta: Math.min(Date.now() + QUESTION_MS, quiz.limite) });
           }}>
             Siguiente
           </button>
         ) : (
-          <button className="btn btn--primary" disabled={enviando} onClick={finishQuiz}>
+          <button className="btn btn--primary" disabled={enviando} onClick={() => quiz && void finishQuiz(quiz, entries)}>
             {enviando ? 'Guardando...' : 'Finalizar Evaluación'}
           </button>
         )}

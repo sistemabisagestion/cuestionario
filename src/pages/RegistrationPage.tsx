@@ -1,48 +1,18 @@
+import { useMatrix } from '../utils/useMatrix';
 import { useState, useRef, useEffect } from 'react';
 import type { FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useUser } from '../context/UserContext';
+import { useUser } from '../context/useUser';
 import { getIntentosByDni } from '../utils/storage';
 import bisaLogo from '../assets/bisa_fondo_blanco.png';
 
-const CARGOS = [
-  'Admin. Contratos',
-  'Arquitecto supervisor',
-  'Asist. Control Doc.',
-  'Asist. Topografía',
-  'Ayudante',
-  'Coordinador proyecto',
-  'Estimador Costos',
-  'Gerente de proyecto',
-  'Ing. Control Proyectos',
-  'Ing. Control Proyectos Jr.',
-  'Ing. Control Proyectos Sr',
-  'Ing. Producción',
-  'Ing. Proyectos Campo Sr.',
-  'Ing. Proyectos Sr.',
-  'Ing. Proyectos campo',
-  'Ing. SSTMA',
-  'Ing. Superv. CQA Jr.',
-  'Ing. Superv. Jr.',
-  'Ing. Superv. SSOMA Jr.',
-  'Ing. Supervisor',
-  'Ing. Supervisor CQA',
-  'Ing. Supervisor CQA Sr.',
-  'Ing. Supervisor SSOMA',
-  'Ing. Supervisor SSOMA Sr.',
-  'Ing. Supervisor Sr.',
-  'Jefe CQA',
-  'Jefe Proyecto',
-  'Jefe SSOMA',
-  'Superv. Cadista (Téc.)',
-  'Supervisor Campo (Téc.)',
-  'Topógrafo Supervisor',
-];
 
 const UNIDADES_NEGOCIO = ['EPCM', 'INGENIERÍA', 'ESTUDIOS MINEROS'];
 const DISCIPLINAS = ['Supervisión CM', 'Gestión de proyecto CM'];
 
 export default function RegistrationPage() {
+  const { snapshot, error: matrixError, loading: matrixLoading } = useMatrix('personal-antiguo');
+  const CARGOS = snapshot?.mapping.map(row => row.cargo) ?? [];
   const navigate = useNavigate();
   const { login } = useUser();
   const [form, setForm] = useState({
@@ -74,6 +44,7 @@ export default function RegistrationPage() {
 
   function validate() {
     const errs: Record<string, string> = {};
+    if (matrixLoading || matrixError) errs.cargo = matrixError || 'Espera a que se cargue la matriz.';
     if (!form.nombre.trim()) errs.nombre = 'Nombre es requerido';
     if (!form.unidadNegocio.trim()) errs.unidadNegocio = 'Unidad de negocio es requerida';
     if (!form.disciplina.trim()) errs.disciplina = 'Disciplina es requerida';
@@ -140,6 +111,7 @@ export default function RegistrationPage() {
         )}
 
         <form onSubmit={handleSubmit}>
+          {(matrixError || matrixLoading || CARGOS.length === 0) && <p role="status">{matrixError || (matrixLoading ? 'Cargando cargos…' : 'La matriz no tiene cargos asignados. Contacta al administrador.')}</p>}
           {/* Nombre */}
           <div className="form-group">
             <label>Nombre completo</label>

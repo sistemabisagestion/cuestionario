@@ -1,29 +1,33 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getEstandares } from '../data';
-import { getEstandaresByCargo as getNuevoIngresoCargos } from '../data/nuevoIngresoMapping';
-import type { Estandar } from '../types';
+import { loadEstandares } from '../data';
+import { getIntentosByDniAsync, readNuevoIngresoUser } from '../utils/storage';
+import { assignedCodes } from '../utils/matrices';
+import type { Estandar, Intento } from '../types';
 
 const MAX_INTENTOS = 2;
 
 export default function NuevoIngresoStandardsPage() {
   const navigate = useNavigate();
-  const [usuario, setUsuario] = useState<any>(null);
+  const [matrixError, setMatrixError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [usuario] = useState(readNuevoIngresoUser);
   const [estandares, setEstandares] = useState<Estandar[]>([]);
+  // Attempts of the global evaluation, from the stored records (server; local copy when offline).
+  const [registros, setRegistros] = useState<Intento[]>([]);
 
   useEffect(() => {
-    const raw = sessionStorage.getItem('bisa-nuevo-ingreso');
-    if (!raw) { navigate('/nuevo-ingreso'); return; }
-    const user = JSON.parse(raw);
-    setUsuario(user);
+    if (!usuario) { navigate('/nuevo-ingreso'); return; }
 
-    const codigos = getNuevoIngresoCargos(user.cargo);
-    const todos = getEstandares();
-    const filtrados = codigos.length > 0
-      ? todos.filter(e => codigos.includes(e.estandar_codigo))
-      : todos;
-    setEstandares(filtrados);
-  }, [navigate]);
+    let active = true;
+    Promise.all([assignedCodes('nuevo-ingreso', usuario.cargo), loadEstandares(), getIntentosByDniAsync(usuario.dni)]).then(([codes, todos, intentos]) => {
+      if (!active) return;
+      setEstandares(todos.filter(est => codes.includes(est.estandar_codigo)));
+      setRegistros(intentos.filter(i => i.estandarCodigo === 'EVALUACION-GLOBAL'));
+    }).catch(() => { if (active) setMatrixError('No se pudo consultar la Matriz de Nuevo Ingreso o el Banco de Preguntas. Intenta ingresar nuevamente.'); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [usuario, navigate]);
 
   if (!usuario) return null;
 
@@ -72,6 +76,11 @@ export default function NuevoIngresoStandardsPage() {
             <p style={{ margin: 0, fontSize: '14px', color: '#4a5568' }}>
               Se han identificado <strong>{estandares.length}</strong> estándares técnicos correspondientes a su perfil profesional en la organización.
             </p>
+            {!loading && !matrixError && estandares.length > 0 && <ul style={{ margin: '12px 0 0', paddingLeft: 20, fontSize: 13, color: '#4a5568' }}>
+              {estandares.map(est => <li key={est.estandar_codigo}>
+                <a href={`/nuevo-ingreso/estandar/${encodeURIComponent(est.estandar_codigo)}`}>{est.estandar_codigo} · {est.estandar_nombre}</a>
+              </li>)}
+            </ul>}
           </div>
 
           {/* Instrucciones Oficiales del Cuestionario */}
@@ -96,30 +105,16 @@ export default function NuevoIngresoStandardsPage() {
           </div>
 
           {/* Bloque de Acción y Estado de Intentos */}
-          {estandares.length === 0 ? (
+          {loading || matrixError || estandares.length === 0 ? (
             <div className="empty-state" style={{ textAlign: 'center', padding: '20px 0' }}>
               <p className="empty-state__text" style={{ color: '#e53e3e', fontWeight: 500 }}>
-                No se encuentran estándares asignados a su cargo actual. Por favor, tome contacto con el administrador del sistema.
+                {matrixError || (loading ? 'Consultando matriz vigente…' : 'No se encuentran estándares asignados a su cargo actual. Por favor, tome contacto con el administrador del sistema.')}
               </p>
             </div>
           ) : (
             (() => {
-              const intentosGlobales = (() => {
-                try {
-                  const raw = localStorage.getItem('bisa-nuevo-ingreso-intentos-global');
-                  if (!raw) return 0;
-                  const data = JSON.parse(raw) as { dni: string; count: number }[];
-                  return data.find(d => d.dni === usuario.dni)?.count ?? 0;
-                } catch { return 0; }
-              })();
-              const aprobado = (() => {
-                try {
-                  const raw = localStorage.getItem('bisa-nuevo-ingreso-resultados');
-                  if (!raw) return false;
-                  const data = JSON.parse(raw) as { dni: string; puntaje: number }[];
-                  return data.some(d => d.dni === usuario.dni && d.puntaje > 12);
-                } catch { return false; }
-              })();
+              const intentosGlobales = registros.length;
+              const aprobado = registros.some(i => i.puntaje > 12);
               const bloqueado = intentosGlobales >= MAX_INTENTOS && !aprobado;
 
               return (
