@@ -1,23 +1,16 @@
+import { useMatrix } from '../utils/useMatrix';
 import { useState, useRef, useEffect } from 'react';
 import type { FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import bisaLogo from '../assets/bisa_fondo_blanco.png';
 
-const CARGOS = [
-  'Admin. Contratos','Arquitecto supervisor','Asist. Control Doc.','Asist. Topografía',
-  'Ayudante','Coordinador proyecto','Estimador Costos','Gerente de proyecto',
-  'Ing. Control Proyectos','Ing. Control Proyectos Jr.','Ing. Control Proyectos Sr',
-  'Ing. Producción','Ing. Proyectos Campo Sr.','Ing. Proyectos Sr.','Ing. Proyectos campo',
-  'Ing. SSTMA','Ing. Superv. CQA Jr.','Ing. Superv. Jr.','Ing. Superv. SSOMA Jr.',
-  'Ing. Supervisor','Ing. Supervisor CQA','Ing. Supervisor CQA Sr.',
-  'Ing. Supervisor SSOMA','Ing. Supervisor SSOMA Sr.','Ing. Supervisor Sr.',
-  'Jefe CQA','Jefe Proyecto','Jefe SSOMA','Superv. Cadista (Téc.)','Supervisor Campo (Téc.)','Topógrafo Supervisor',
-];
 
 const UNIDADES_NEGOCIO = ['EPCM', 'INGENIERÍA', 'ESTUDIOS MINEROS'];
 const DISCIPLINAS = ['Supervisión CM', 'Gestión de proyecto CM'];
 
 export default function NuevoIngresoPage() {
+  const { snapshot, error: matrixError, loading: matrixLoading } = useMatrix('nuevo-ingreso');
+  const CARGOS = snapshot?.mapping.map(row => row.cargo) ?? [];
   const navigate = useNavigate();
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [form, setForm] = useState({ nombre: '', unidadNegocio: '', disciplina: '', cargo: '', correo: '', dni: '' });
@@ -40,10 +33,12 @@ export default function NuevoIngresoPage() {
 
   function validate() {
     const errs: Record<string, string> = {};
+    if (matrixLoading || matrixError) errs.cargo = matrixError || 'Espera a que se cargue la matriz.';
     if (!form.nombre.trim()) errs.nombre = 'Nombre es requerido';
     if (!form.unidadNegocio) errs.unidadNegocio = 'Unidad de negocio es requerida';
     if (!form.disciplina) errs.disciplina = 'Disciplina es requerida';
     if (!form.cargo) errs.cargo = 'Cargo es requerido';
+    if (form.cargo && !CARGOS.includes(form.cargo)) errs.cargo = 'Seleccione un cargo válido de la lista';
     if (!form.correo.includes('@')) errs.correo = 'Correo inválido';
     if (!/^\d{8}$/.test(form.dni)) errs.dni = 'DNI debe tener 8 dígitos';
     return errs;
@@ -75,6 +70,7 @@ export default function NuevoIngresoPage() {
         <p className="registration__title">Registro — Nuevo Ingreso</p>
 
         <form onSubmit={handleSubmit}>
+          {(matrixError || matrixLoading || CARGOS.length === 0) && <p role="status">{matrixError || (matrixLoading ? 'Cargando cargos…' : 'La matriz no tiene cargos asignados. Contacta al administrador.')}</p>}
           <div className="form-group">
             <label>Nombre completo</label>
             <input type="text" placeholder="Juan Pérez García" value={form.nombre}

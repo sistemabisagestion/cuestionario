@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useUser } from '../context/UserContext';
+import { useUser } from '../context/useUser';
 import { getIntentosByDni, getIntentosByDniAsync } from '../utils/storage';
 import type { Intento } from '../types';
 
@@ -14,7 +14,7 @@ export default function HistoryPage() {
   const { user } = useUser();
   const navigate = useNavigate();
 
-  // Start with localStorage data (instant), then refresh from Supabase
+  // Start with localStorage data (instant), then refresh from the server API
   const [intentos, setIntentos] = useState<Intento[]>(() =>
     user ? getIntentosByDni(user.dni) : []
   );

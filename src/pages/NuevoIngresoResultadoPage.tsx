@@ -1,15 +1,20 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+interface ResultadoNuevoIngreso { puntaje: number; total: number; intentoNum: number; estandarNombre: string }
+// Result left by NuevoIngresoQuizPage in this tab.
+function readResultado(): ResultadoNuevoIngreso | null {
+  try {
+    const value = JSON.parse(sessionStorage.getItem('bisa-ni-resultado') ?? 'null');
+    return value && Number.isFinite(value.puntaje) && Number.isFinite(value.total) ? value : null;
+  } catch { return null; }
+}
+
 export default function NuevoIngresoResultadoPage() {
   const navigate = useNavigate();
-  const [resultado, setResultado] = useState<any>(null);
+  const [resultado] = useState(readResultado);
 
-  useEffect(() => {
-    const raw = sessionStorage.getItem('bisa-ni-resultado');
-    if (!raw) { navigate('/nuevo-ingreso/standards'); return; }
-    setResultado(JSON.parse(raw));
-  }, [navigate]);
+  useEffect(() => { if (!resultado) navigate('/nuevo-ingreso/standards'); }, [resultado, navigate]);
 
   if (!resultado) return null;
 

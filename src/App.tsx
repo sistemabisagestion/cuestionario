@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
-import { UserProvider, useUser } from './context/UserContext';
+import { UserProvider } from './context/UserContext';
+import { useUser } from './context/useUser';
 import LandingPage from './pages/LandingPage';
 import RegistrationPage from './pages/RegistrationPage';
 import SelectStandardPage from './pages/SelectStandardPage';

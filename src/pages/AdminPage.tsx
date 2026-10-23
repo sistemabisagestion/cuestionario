@@ -1,12 +1,21 @@
+import { apiRequest, loginAdmin, logoutSession } from '../utils/api';
 import bisaLogoNegro from '../assets/bisa_fondo_negro.png';
 import bisaLogoBlanco from '../assets/bisa_fondo_blanco.png';
-import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { importFromExcel, addTableFormat, getAllIntentosAsync } from '../utils/storage';
-import { getEstandares, saveCustomPreguntas, hasCustomPreguntas, resetPreguntas } from '../data';
-import { getLinks, saveLinks, resetLinks, DEFAULT_LINKS } from '../data/estandarLinks';
-import { getNuevoIngresoMapping, saveNuevoIngresoMapping, resetNuevoIngresoMapping, parseMappingExcel } from '../data/nuevoIngresoMapping';
-import type { Estandar, Pregunta, Intento } from '../types';
+import { getAllIntentosAsync } from '../utils/storage';
+import { legacyCustomPreguntas } from '../data';
+import { legacyCustomLinks } from '../data/estandarLinks';
+import { loadDataset, publishDataset } from '../utils/datasets';
+import { downloadResultsExcel } from '../utils/excelTables';
+import { toRows } from '../../shared/datasets.mjs';
+import DataControls from './DataControls';
+import type { Intento } from '../types';
+
+// Historical records may still carry the snake_case names of the old storage.
+type IntentoRegistro = Intento & Partial<{ estandar_codigo: string; unidad_negocio: string; estandar_nombre: string; intento_num: number; total_preguntas: number }>;
+type FiltroEstado = 'todos' | 'aprobado' | 'desaprobado';
+type FiltroTipo = 'todos' | 'antiguo' | 'nuevo';
 
 // ── Colores corporativos ──────────────────────────────────────────────────────
 const MAGENTA = '#E6007E';
@@ -60,60 +69,64 @@ function GestionSeccion({ title, subtitle, children }: { title: string; subtitle
 
 export default function AdminPage() {
   const navigate = useNavigate();
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem('bisa-admin-auth') === 'true');
+  const [authed, setAuthed] = useState(false);
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
   const [activeTab, setActiveTab] = useState<'monitoreo' | 'gestion'>('monitoreo');
-  const [filtroEstado, setFiltroEstado] = useState<'todos' | 'aprobado' | 'desaprobado'>('todos');
-  const [filtroTipo, setFiltroTipo] = useState<'todos' | 'antiguo' | 'nuevo'>('todos');
+  const [filtroEstado, setFiltroEstado] = useState<FiltroEstado>('todos');
+  const [filtroTipo, setFiltroTipo] = useState<FiltroTipo>('todos');
   const [mensaje, setMensaje] = useState<{ tipo: 'ok' | 'error'; texto: string } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [editandoLinks, setEditandoLinks] = useState(false);
   const [linksEditables, setLinksEditables] = useState<Record<string, { documento: string; video: string }>>({});
+  const [linksBase, setLinksBase] = useState('');
+  const [linksRefresh, setLinksRefresh] = useState(0);
+  const [guardandoLinks, setGuardandoLinks] = useState(false);
+  // Copias que solo existen en este navegador (anteriores a la centralización); nunca se borran.
+  const legacyPreguntas = useMemo(() => { const data = legacyCustomPreguntas(); return data ? { description: 'una versión local del banco de preguntas', rows: toRows('preguntas', data) } : null; }, []);
+  const legacyLinks = useMemo(() => { const data = legacyCustomLinks(); return data ? { description: 'una versión local de los links', rows: toRows('links', data) } : null; }, []);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const preguntasInputRef = useRef<HTMLInputElement>(null);
-  const linksInputRef = useRef<HTMLInputElement>(null);
-  const matrizInputRef = useRef<HTMLInputElement>(null);
+  // Resultados remotos consultados mediante la API del servidor.
+  const [intentosServidor, setIntentosServidor] = useState<Intento[]>([]);
 
-  // Solamente manejamos intentos provenientes directamente de Supabase
-  const [intentosSupabase, setIntentosSupabase] = useState<Intento[]>([]);
-  const allEstandares = useMemo(() => getEstandares(), [refreshKey]);
-
-  // Cargar intentos globales desde la base de datos de Supabase
+  // Cargar intentos globales después de validar la sesión administrativa.
   const loadIntentos = useCallback(() => {
-    getAllIntentosAsync().then(setIntentosSupabase);
+    getAllIntentosAsync().then(setIntentosServidor).catch(() => setMensaje({ tipo: 'error', texto: 'No se pudieron cargar los resultados del servidor.' }));
   }, []);
 
   useEffect(() => {
-    loadIntentos();
-  }, [loadIntentos, refreshKey]);
+    if (authed) loadIntentos();
+  }, [loadIntentos, refreshKey, authed]);
 
-  // ── Mapeo robusto a partir de los datos reales de Supabase (Cero LocalStorage) ─
+  useEffect(() => {
+    apiRequest<{ admin: boolean }>('session').then(data => setAuthed(data.admin)).catch(() => setAuthed(false));
+  }, []);
+
+  // Compatibilidad con registros históricos.
   const todosIntentos = useMemo(() => {
-    return intentosSupabase.map(i => {
-      const estCodigo = i.estandarCodigo || (i as any).estandar_codigo || '';
-      const rawTipo = String((i as any).tipo || '').toUpperCase();
-      
+    return intentosServidor.map((i: IntentoRegistro) => {
+      const estCodigo = i.estandarCodigo || i.estandar_codigo || '';
+      const rawTipo = String(i.tipo || '').toUpperCase();
+
       // Detección robusta de si el registro pertenece a Onboarding / Nuevo Ingreso
       const esNuevoIngreso = estCodigo === 'EVALUACION-GLOBAL' || rawTipo.includes('NUEVO');
 
       return {
         ...i,
         tipo: esNuevoIngreso ? 'NUEVO INGRESO' : 'USUARIO ANTIGUO',
-        unidadNegocio: i.unidadNegocio || (i as any).unidad_negocio || '',
+        unidadNegocio: i.unidadNegocio || i.unidad_negocio || '',
         estandarCodigo: estCodigo,
-        estandarNombre: i.estandarNombre || (i as any).estandar_nombre || '',
-        intentoNum: (i as any).intento_num || (i as any).intentoNum || 1,
-        totalPreguntas: i.totalPreguntas || (i as any).total_preguntas || 20
+        estandarNombre: i.estandarNombre || i.estandar_nombre || '',
+        intentoNum: i.intento_num || i.intentoNum || 1,
+        totalPreguntas: i.totalPreguntas || i.total_preguntas || 20
       };
     });
-  }, [intentosSupabase]);
+  }, [intentosServidor]);
 
   // ── Filtrado por Pestañas y Estados ──────────────────────────────────────────
-  const filtered = useMemo(() => todosIntentos.filter((i: any) => {
+  const filtered = useMemo(() => todosIntentos.filter(i => {
     const esNuevo = i.tipo === 'NUEVO INGRESO';
-    
+
     // Regla de negocio para aprobación: Nuevo Ingreso aprueba con >13 (Nota 14), Antiguo con >12 (Nota 13)
     const aprobado = esNuevo ? i.puntaje > 13 : i.puntaje > 12;
 
@@ -125,170 +138,60 @@ export default function AdminPage() {
   }), [todosIntentos, filtroEstado, filtroTipo]);
 
   const sorted = useMemo(() =>
-    [...filtered].sort((a: any, b: any) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()),
+    [...filtered].sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()),
     [filtered]);
 
   // ── KPIs Dinámicos basados en la Base de Datos Real ──────────────────────────
   const totalEvals = todosIntentos.length;
-  const aprobadosTotal = todosIntentos.filter((i: any) =>
+  const aprobadosTotal = todosIntentos.filter(i =>
     i.tipo === 'NUEVO INGRESO' ? i.puntaje > 13 : i.puntaje > 12
   ).length;
   const desaprobadosTotal = totalEvals - aprobadosTotal;
   const pctAprobacion = totalEvals > 0 ? Math.round((aprobadosTotal / totalEvals) * 100) : 0;
-  const totalPreguntas = allEstandares.reduce((sum, e) => sum + e.preguntas.length, 0);
 
   // ── Handlers de archivos ───────────────────────────────────────────────────
+  // Exporta los registros que muestran los filtros activos (todos, si no hay filtros).
   function handleDescargarResultados() {
-    import('xlsx-js-style').then(XLSX => {
-      const rows = todosIntentos.map((i: any) => ({
-        'Tipo': i.tipo || 'USUARIO ANTIGUO',
-        'ID': i.id,
-        'Fecha': new Date(i.fecha).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-        'Nombre': i.nombre || '',
-        'DNI': i.dni,
-        'Unidad Negocio': i.unidadNegocio || '',
-        'Disciplina': i.disciplina || '',
-        'Cargo': i.cargo || '',
-        'Estándar': i.tipo === 'NUEVO INGRESO' ? 'Evaluación Global (Onboarding)' : i.estandarCodigo,
-        'Nombre Estándar': i.estandarNombre || '',
-        'Intento': i.intentoNum || 1,
-        'Nota': i.puntaje,
-        'Total Preguntas': i.totalPreguntas,
-        'Estado': (i.tipo === 'NUEVO INGRESO' ? i.puntaje > 13 : i.puntaje > 12) ? 'Aprobado' : 'Desaprobado',
-      }));
-      const ws = XLSX.utils.json_to_sheet(rows);
-      ws['!cols'] = [
-        { wch: 16 }, { wch: 14 }, { wch: 18 }, { wch: 25 }, { wch: 10 },
-        { wch: 18 }, { wch: 22 }, { wch: 25 }, { wch: 20 }, { wch: 40 },
-        { wch: 8 }, { wch: 8 }, { wch: 14 }, { wch: 12 },
-      ];
-      addTableFormat(ws, rows.length, 14);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Evaluaciones');
-      XLSX.writeFile(wb, `bisa-evaluaciones-${new Date().toISOString().slice(0, 10)}.xlsx`);
-      setMensaje({ tipo: 'ok', texto: `${rows.length} evaluaciones exportadas.` });
-    });
+    const rows = sorted.map(i => ({
+      tipo: i.tipo || 'USUARIO ANTIGUO',
+      id: i.id,
+      fecha: new Date(i.fecha).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      nombre: i.nombre || '',
+      dni: i.dni,
+      unidadNegocio: i.unidadNegocio || '',
+      disciplina: i.disciplina || '',
+      cargo: i.cargo || '',
+      estandar: i.tipo === 'NUEVO INGRESO' ? 'Evaluación Global (Onboarding)' : i.estandarCodigo,
+      estandarNombre: i.estandarNombre || '',
+      intento: i.intentoNum || 1,
+      nota: i.puntaje,
+      total: i.totalPreguntas,
+      estado: (i.tipo === 'NUEVO INGRESO' ? i.puntaje > 13 : i.puntaje > 12) ? 'Aprobado' : 'Desaprobado',
+    }));
+    downloadResultsExcel(rows)
+      .then(() => setMensaje({ tipo: 'ok', texto: `${rows.length} evaluaciones exportadas.` }))
+      .catch(() => setMensaje({ tipo: 'error', texto: 'No se pudo generar el Excel de resultados.' }));
   }
 
-  function handleSubirResultados(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    importFromExcel(file).then(result => {
-      setMensaje(result.success
-        ? { tipo: 'ok', texto: `Se importaron ${result.count} evaluaciones.` }
-        : { tipo: 'error', texto: 'Formato inválido.' });
-      if (result.success) setRefreshKey(k => k + 1);
-    });
-    e.target.value = '';
+  async function abrirEditorLinks() {
+    if (editandoLinks) { setEditandoLinks(false); return; }
+    try {
+      const current = await loadDataset('links');
+      setLinksEditables(JSON.parse(JSON.stringify(current.data)));
+      setLinksBase(current.version);
+      setEditandoLinks(true);
+    } catch (error) { setMensaje({ tipo: 'error', texto: error instanceof Error ? error.message : 'No se pudieron cargar los links.' }); }
   }
 
-  function handleDescargarPreguntas() {
-    import('xlsx-js-style').then(XLSX => {
-      const rows: Record<string, unknown>[] = [];
-      for (const est of getEstandares()) {
-        for (const p of est.preguntas) {
-          rows.push({
-            'Código Estándar': est.estandar_codigo, 'Nombre Estándar': est.estandar_nombre,
-            'ID Pregunta': p.id, 'Categoría': p.categoria, 'Pregunta': p.pregunta,
-            'Opción A': p.opcion_a, 'Opción B': p.opcion_b, 'Opción C': p.opcion_c,
-            'Opción D': p.opcion_d, 'Opción E': p.opcion_e, 'Respuesta Correcta': p.respuesta_correcta,
-          });
-        }
-      }
-      const ws = XLSX.utils.json_to_sheet(rows);
-      ws['!cols'] = [{ wch: 18 }, { wch: 40 }, { wch: 12 }, { wch: 20 }, { wch: 60 }, { wch: 40 }, { wch: 40 }, { wch: 40 }, { wch: 40 }, { wch: 40 }, { wch: 18 }];
-      addTableFormat(ws, rows.length, 11);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Preguntas');
-      XLSX.writeFile(wb, `bisa-preguntas-${new Date().toISOString().slice(0, 10)}.xlsx`);
-    });
-    setMensaje({ tipo: 'ok', texto: 'Banco de preguntas descargado.' });
-  }
-
-  function handleSubirPreguntas(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    import('xlsx-js-style').then(XLSX => {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        try {
-          const data = new Uint8Array(ev.target?.result as ArrayBuffer);
-          const wb = XLSX.read(data, { type: 'array' });
-          const ws = wb.Sheets[wb.SheetNames[0]];
-          const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws);
-          const map = new Map<string, { nombre: string; preguntas: Pregunta[] }>();
-          let idCounter = 1;
-          for (const row of rows) {
-            const codigo = String(row['Código Estándar'] || row['Codigo Estandar'] || '').trim();
-            const nombre = String(row['Nombre Estándar'] || row['Nombre Estandar'] || '').trim();
-            if (!codigo) continue;
-            if (!map.has(codigo)) map.set(codigo, { nombre, preguntas: [] });
-            map.get(codigo)!.preguntas.push({
-              id: Number(row['ID Pregunta']) || idCounter++,
-              categoria: String(row['Categoría'] || row['Categoria'] || ''),
-              pregunta: String(row['Pregunta'] || ''),
-              opcion_a: String(row['Opción A'] || row['Opcion A'] || ''),
-              opcion_b: String(row['Opción B'] || row['Opcion B'] || ''),
-              opcion_c: String(row['Opción C'] || row['Opcion C'] || ''),
-              opcion_d: String(row['Opción D'] || row['Opcion D'] || ''),
-              opcion_e: String(row['Opción E'] || row['Opcion E'] || ''),
-              respuesta_correcta: String(row['Respuesta Correcta'] || '').trim().toUpperCase(),
-            });
-          }
-          const estandares: Estandar[] = [];
-          map.forEach((val, codigo) => estandares.push({ estandar_codigo: codigo, estandar_nombre: val.nombre, preguntas: val.preguntas }));
-          if (estandares.length === 0) { setMensaje({ tipo: 'error', texto: 'No se encontraron preguntas.' }); return; }
-          saveCustomPreguntas(estandares);
-          const total = estandares.reduce((s, e) => s + e.preguntas.length, 0);
-          setMensaje({ tipo: 'ok', texto: `Cargadas ${total} preguntas en ${estandares.length} estándares.` });
-          setRefreshKey(k => k + 1);
-        } catch { setMensaje({ tipo: 'error', texto: 'Error al leer el archivo.' }); }
-      };
-      reader.readAsArrayBuffer(file);
-    });
-    e.target.value = '';
-  }
-
-  function handleDescargarLinks() {
-    import('xlsx-js-style').then(XLSX => {
-      const links = getLinks();
-      const rows = Object.entries(links).map(([codigo, l]) => ({ 'Estandar': codigo, 'Link del documento': l.documento, 'Link del video': l.video }));
-      const ws = XLSX.utils.json_to_sheet(rows);
-      ws['!cols'] = [{ wch: 20 }, { wch: 80 }, { wch: 80 }];
-      addTableFormat(ws, rows.length, 3);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Links');
-      XLSX.writeFile(wb, `bisa-links-${new Date().toISOString().slice(0, 10)}.xlsx`);
-    });
-    setMensaje({ tipo: 'ok', texto: 'Links descargados.' });
-  }
-
-  function handleSubirLinks(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    import('xlsx-js-style').then(XLSX => {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        try {
-          const data = new Uint8Array(ev.target?.result as ArrayBuffer);
-          const wb = XLSX.read(data, { type: 'array' });
-          const ws = wb.Sheets[wb.SheetNames[0]];
-          const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws);
-          const newLinks: Record<string, { documento: string; video: string }> = {};
-          for (const row of rows) {
-            const codigo = String(row['Estandar'] || '').trim();
-            if (!codigo) continue;
-            newLinks[codigo] = { documento: String(row['Link del documento'] || '').trim(), video: String(row['Link del video'] || '').trim() };
-          }
-          if (Object.keys(newLinks).length === 0) { setMensaje({ tipo: 'error', texto: 'No se encontraron links.' }); return; }
-          saveLinks(newLinks);
-          setMensaje({ tipo: 'ok', texto: `Links de ${Object.keys(newLinks).length} estándares actualizados.` });
-          setRefreshKey(k => k + 1);
-        } catch { setMensaje({ tipo: 'error', texto: 'Error al leer el archivo de links.' }); }
-      };
-      reader.readAsArrayBuffer(file);
-    });
-    e.target.value = '';
+  async function guardarLinks() {
+    setGuardandoLinks(true);
+    try {
+      const result = await publishDataset('links', { rows: toRows('links', linksEditables) }, 'parcial', linksBase);
+      setEditandoLinks(false);
+      setLinksRefresh(k => k + 1);
+      setMensaje({ tipo: 'ok', texto: result.unchanged ? 'No había cambios en los links.' : `Links publicados para todos los usuarios (${result.summary?.modified ?? 0} modificados).` });
+    } catch (error) { setMensaje({ tipo: 'error', texto: error instanceof Error ? error.message : 'No se pudieron guardar los links.' }); }
+    finally { setGuardandoLinks(false); }
   }
 
   // ── Login ──────────────────────────────────────────────────────────────────
@@ -300,10 +203,11 @@ export default function AdminPage() {
             <img src={bisaLogoBlanco} alt="BISA" style={{ height: 80, objectFit: 'contain' }} />
           </div>
           <p className="registration__title">Panel Administrador</p>
-          <form onSubmit={e => {
+          <form onSubmit={async e => {
             e.preventDefault();
-            if (password === 'admin123') { sessionStorage.setItem('bisa-admin-auth', 'true'); setAuthed(true); }
-            else setAuthError('Contraseña incorrecta');
+            setAuthError('');
+            try { await loginAdmin(password); setAuthed(true); }
+            catch (error) { setAuthError(error instanceof Error ? error.message : 'Error interno del servidor de autenticación. Intenta nuevamente.'); }
           }}>
             <div className="form-group">
               <label>Contraseña</label>
@@ -326,7 +230,7 @@ export default function AdminPage() {
           <img src={bisaLogoNegro} alt="BISA" style={{ height: 56, objectFit: 'contain' }} />
         </div>
         <div className="header__nav">
-          <button className="header__link header__link--logout" onClick={() => { sessionStorage.removeItem('bisa-admin-auth'); navigate('/'); }}>
+          <button className="header__link header__link--logout" onClick={async () => { await logoutSession(); sessionStorage.removeItem('bisa-admin-auth'); setAuthed(false); navigate('/'); }}>
             Cerrar sesión
           </button>
         </div>
@@ -378,7 +282,7 @@ export default function AdminPage() {
             <div className="admin-filters" style={{ marginBottom: 20 }}>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Estado</label>
-                <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value as any)}>
+                <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value as FiltroEstado)}>
                   <option value="todos">Todos</option>
                   <option value="aprobado">Aprobados</option>
                   <option value="desaprobado">Desaprobados</option>
@@ -386,7 +290,7 @@ export default function AdminPage() {
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Tipo de usuario</label>
-                <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value as any)}>
+                <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value as FiltroTipo)}>
                   <option value="todos">Todos</option>
                   <option value="antiguo">Usuario Antiguo</option>
                   <option value="nuevo">Nuevo Ingreso</option>
@@ -425,7 +329,7 @@ export default function AdminPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sorted.map((intento: any) => {
+                    {sorted.map(intento => {
                       const esNuevo = intento.tipo === 'NUEVO INGRESO';
                       const aprobado = esNuevo ? intento.puntaje > 13 : intento.puntaje > 12;
                       const fecha = new Date(intento.fecha).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -486,44 +390,29 @@ export default function AdminPage() {
         {activeTab === 'gestion' && (
           <>
             {/* Resultados */}
-            <GestionSeccion title="Resultados de Evaluaciones" subtitle="Exporta o importa el historial completo de evaluaciones.">
+            <GestionSeccion title="Resultados de Evaluaciones" subtitle="Descarga el historial de evaluaciones según los filtros de Monitoreo y KPIs.">
               <button className="btn btn--primary" onClick={handleDescargarResultados}>⬇ Descargar (Excel)</button>
-              <button className="btn btn--secondary" onClick={() => fileInputRef.current?.click()}>⬆ Subir (Excel)</button>
-              <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleSubirResultados} />
             </GestionSeccion>
 
             {/* Banco de Preguntas */}
-            <GestionSeccion
-              title="Banco de Preguntas"
-              subtitle={`${allEstandares.length} estándares — ${totalPreguntas} preguntas${hasCustomPreguntas() ? ' (personalizado)' : ''}`}
-            >
-              <button className="btn btn--primary" onClick={handleDescargarPreguntas}>⬇ Descargar (Excel)</button>
-              <button className="btn btn--secondary" onClick={() => preguntasInputRef.current?.click()}>⬆ Subir (Excel)</button>
-              {hasCustomPreguntas() && (
-                <button className="btn btn--dark" onClick={() => { resetPreguntas(); setMensaje({ tipo: 'ok', texto: 'Preguntas restauradas.' }); setRefreshKey(k => k + 1); }}>↺ Restaurar originales</button>
-              )}
-              <input ref={preguntasInputRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleSubirPreguntas} />
+            <GestionSeccion title="Banco de Preguntas" subtitle="Preguntas publicadas para todas las evaluaciones.">
+              <DataControls module="preguntas" legacy={legacyPreguntas} />
             </GestionSeccion>
 
             {/* Links de Estándares */}
-            <GestionSeccion
-              title="Links de Estándares"
-              subtitle={`${Object.keys(DEFAULT_LINKS).length} estándares con video y documento en SharePoint.`}
-            >
-              <button className="btn btn--primary" onClick={handleDescargarLinks}>⬇ Descargar (Excel)</button>
-              <button className="btn btn--secondary" onClick={() => linksInputRef.current?.click()}>⬆ Subir (Excel)</button>
-              <button className="btn btn--secondary" onClick={() => { setLinksEditables(JSON.parse(JSON.stringify(getLinks()))); setEditandoLinks(v => !v); }}>
-                {editandoLinks ? '✕ Cerrar editor' : '✏ Editar links'}
-              </button>
-              <button className="btn btn--dark" onClick={() => { resetLinks(); setMensaje({ tipo: 'ok', texto: 'Links restaurados.' }); setRefreshKey(k => k + 1); }}>↺ Restaurar</button>
-              <input ref={linksInputRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleSubirLinks} />
+            <GestionSeccion title="Links de Estándares" subtitle="Videos y documentos de cada estándar.">
+              <DataControls module="links" refreshKey={linksRefresh} legacy={legacyLinks}>
+                <button className="btn btn--secondary" onClick={() => void abrirEditorLinks()}>
+                  {editandoLinks ? '✕ Cerrar editor' : '✏ Editar links'}
+                </button>
+              </DataControls>
 
               {editandoLinks && (
                 <div style={{ width: '100%', marginTop: 12, border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
                   <div style={{ background: '#f9fafb', padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e5e7eb' }}>
                     <span style={{ fontWeight: 600, fontSize: 13 }}>Editor de links</span>
-                    <button className="btn btn--primary" style={{ fontSize: 12, padding: '4px 14px' }} onClick={() => { saveLinks(linksEditables); setEditandoLinks(false); setMensaje({ tipo: 'ok', texto: 'Links guardados.' }); }}>
-                      Guardar cambios
+                    <button className="btn btn--primary" style={{ fontSize: 12, padding: '4px 14px' }} disabled={guardandoLinks} onClick={() => void guardarLinks()}>
+                      Publicar cambios
                     </button>
                   </div>
                   <div style={{ maxHeight: 360, overflowY: 'auto' }}>
@@ -539,40 +428,17 @@ export default function AdminPage() {
               )}
             </GestionSeccion>
 
-            {/* Matriz Nuevo Ingreso */}
             <GestionSeccion
               title="Matriz de Nuevo Ingreso"
               subtitle="Define qué estándares se asignan a cada cargo para el flujo de onboarding."
             >
-              <button className="btn btn--primary" onClick={() => {
-                import('xlsx-js-style').then(XLSX => {
-                  const mapping = getNuevoIngresoMapping();
-                  if (mapping.length === 0) { setMensaje({ tipo: 'error', texto: 'No hay matriz cargada.' }); return; }
-                  const rows: Record<string, unknown>[] = [];
-                  mapping.forEach(m => m.estandares.forEach(e => rows.push({ 'Cargo': m.cargo, 'Estándar': e })));
-                  const ws = XLSX.utils.json_to_sheet(rows);
-                  ws['!cols'] = [{ wch: 30 }, { wch: 25 }];
-                  addTableFormat(ws, rows.length, 2);
-                  const wb = XLSX.utils.book_new();
-                  XLSX.utils.book_append_sheet(wb, ws, 'Matriz');
-                  XLSX.writeFile(wb, `bisa-matriz-nuevo-ingreso-${new Date().toISOString().slice(0, 10)}.xlsx`);
-                });
-              }}>
-                ⬇ Descargar (Excel)
-              </button>
-              <button className="btn btn--secondary" onClick={() => matrizInputRef.current?.click()}>⬆ Subir (Excel)</button>
-              <button className="btn btn--dark" onClick={() => { resetNuevoIngresoMapping(); setMensaje({ tipo: 'ok', texto: 'Matriz limpiada.' }); setRefreshKey(k => k + 1); }}>🗑 Limpiar matriz</button>
-              <input ref={matrizInputRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={async e => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                try {
-                  const mapping = await parseMappingExcel(file);
-                  saveNuevoIngresoMapping(mapping);
-                  setMensaje({ tipo: 'ok', texto: `Matriz cargada: ${mapping.length} cargos.` });
-                  setRefreshKey(k => k + 1);
-                } catch { setMensaje({ tipo: 'error', texto: 'Error al leer la matriz.' }); }
-                e.target.value = '';
-              }} />
+              <DataControls module="nuevo-ingreso" />
+            </GestionSeccion>
+            <GestionSeccion
+              title="Matriz de Personal Antiguo"
+              subtitle="Define qué estándares corresponden a cada cargo para los trabajadores antiguos."
+            >
+              <DataControls module="personal-antiguo" />
             </GestionSeccion>
           </>
         )}
