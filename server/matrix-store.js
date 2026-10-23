@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, open, rename, unlink } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { HttpError } from './http.js';
+import { HttpError, retryRead } from './http.js';
 
 export const conflict = () => new HttpError(409, 'La matriz cambió. Vuelve a descargarla y revisa los cambios antes de confirmar.');
 const hash = text => createHash('sha256').update(text).digest('hex');
@@ -47,7 +47,8 @@ export function blobMatrixStore(sdk) {
   return {
     async read(type) {
       // Bypass CDN cache: stale reads are unacceptable for assignment selection.
-      const result = await sdk.get(path(type), { access: 'private', useCache: false });
+      const result = await retryRead(() => sdk.get(path(type), { access: 'private', useCache: false }),
+        { isFinal: error => !!sdk.BlobNotFoundError && error instanceof sdk.BlobNotFoundError });
       if (!result) return null;
       if (result.statusCode !== 200 || !result.stream || result.blob.size > 1048576) throw new Error('Invalid blob response');
       const text = await new Response(result.stream).text();

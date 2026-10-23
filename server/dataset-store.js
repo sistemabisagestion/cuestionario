@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, open, rename, unlink } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { HttpError } from './http.js';
+import { HttpError, retryRead } from './http.js';
 import { DATASET_MODULES } from '../shared/datasets.mjs';
 
 // Layout (same in both adapters):
@@ -80,7 +80,7 @@ export function blobDatasetStore(sdk, prefix = 'bisaquiz/datos') {
   const isNotFound = error => !!sdk.BlobNotFoundError && error instanceof sdk.BlobNotFoundError;
   async function readJson(path) {
     // useCache:false reads origin storage, so every user sees the same active manifest.
-    const result = await sdk.get(path, { access: 'private', useCache: false });
+    const result = await retryRead(() => sdk.get(path, { access: 'private', useCache: false }), { isFinal: isNotFound });
     if (!result) return null;
     if (result.statusCode !== 200 || !result.stream || result.blob.size > MAX_DOCUMENT_BYTES) throw new Error('Invalid blob response');
     return JSON.parse(await new Response(result.stream).text());

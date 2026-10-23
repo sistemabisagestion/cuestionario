@@ -4,6 +4,23 @@ export class HttpError extends Error {
 
 const NETWORK_ERRORS = new Set(['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'ETIMEDOUT', 'EAI_AGAIN', 'EHOSTUNREACH']);
 
+// Reads are idempotent, so a transient storage failure is retried before the request fails.
+// `isFinal` errors (e.g. "not found") are returned to the caller immediately.
+export async function retryRead(read, { attempts = 3, delays = [150, 400], isFinal = () => false } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await read(); }
+    catch (error) {
+      if (attempt >= attempts || isFinal(error)) throw error;
+      await new Promise(resolve => setTimeout(resolve, delays[attempt - 1] ?? delays.at(-1)));
+    }
+  }
+}
+
+// Error text for logs: no URLs, connection strings or long payloads.
+export function logSafeMessage(error) {
+  return String(error?.message ?? '').replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, '<url>').replace(/\s+/g, ' ').slice(0, 160);
+}
+
 export function endpoint(action, { maxBodyBytes = 262144 } = {}) {
   return async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -41,7 +58,7 @@ export function endpoint(action, { maxBodyBytes = 262144 } = {}) {
       res.statusCode = failure.status;
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       // Never log connection strings, query parameters, passwords, or personal data.
-      if (!(error instanceof HttpError)) console.error('Database/API operation failed', error?.code ?? error?.name);
+      if (!(error instanceof HttpError)) console.error('Database/API operation failed', error?.name, error?.code ?? '', logSafeMessage(error));
       res.end(JSON.stringify({ error: failure.message, ...(failure.code ? { code: failure.code } : {}) }));
     }
   };

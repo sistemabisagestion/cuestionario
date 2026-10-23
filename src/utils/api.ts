@@ -4,6 +4,9 @@ export class ApiError extends Error {
   constructor(message: string, status: number | null = null, code: string | null = null) { super(message); this.name = 'ApiError'; this.status = status; this.code = code; }
 }
 
+// Troubleshooting hints that only make sense with `npm run dev`.
+const devHint = (text: string) => (import.meta.env?.DEV ? ` ${text}` : '');
+
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `/api/${path}`;
   let response: Response;
@@ -13,18 +16,22 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
       headers: { 'Content-Type': 'application/json', ...options.headers },
     });
   } catch {
-    throw new ApiError('Servidor desconectado: no se pudo conectar con la API. Comprueba que npm run dev siga en ejecución e intenta nuevamente.', null, 'API_UNREACHABLE');
+    throw new ApiError(`Servidor desconectado: no se pudo conectar con la API.${devHint('Comprueba que npm run dev siga en ejecución.')} Revisa tu conexión e intenta nuevamente.`, null, 'API_UNREACHABLE');
   }
   const context = `${url} (HTTP ${response.status})`;
+  // Vercel answers this way on the URL of a deployment that was removed (e.g. an old tab).
+  if (response.headers.get('x-vercel-error') === 'DEPLOYMENT_NOT_FOUND') {
+    throw new ApiError('Esta dirección corresponde a una versión de BISAQUIZ que ya no existe. Abre https://cuestionario-bisa1.vercel.app/ e intenta nuevamente.', response.status, 'DEPLOYMENT_NOT_FOUND');
+  }
   let text: string;
   try { text = await response.text(); }
   catch { throw new ApiError(`Se interrumpió la respuesta de ${context}. Intenta nuevamente.`, response.status); }
   if (!text.trim()) {
-    throw new ApiError(`La API devolvió una respuesta vacía en ${context}. Comprueba la ruta y reinicia el servidor API si ejecuta una versión anterior.`, response.status);
+    throw new ApiError(`La API devolvió una respuesta vacía en ${context}.${devHint('Comprueba la ruta y reinicia el servidor API si ejecuta una versión anterior.')}`, response.status);
   }
   const contentType = response.headers.get('content-type') ?? '';
   if (!/^application\/(?:[\w.-]+\+)?json(?:\s*;|$)/i.test(contentType)) {
-    throw new ApiError(`La API devolvió ${/html|^\s*</i.test(contentType + text) ? 'HTML' : 'un contenido que no es JSON'} en ${context}. Revisa la ruta /api y el proxy de desarrollo.`, response.status);
+    throw new ApiError(`La API devolvió ${/html|^\s*</i.test(contentType + text) ? 'HTML' : 'un contenido que no es JSON'} en ${context}.${devHint('Revisa la ruta /api y el proxy de desarrollo.')}`, response.status);
   }
   let body: unknown;
   try { body = JSON.parse(text); }
