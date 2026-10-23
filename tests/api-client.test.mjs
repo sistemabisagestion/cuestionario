@@ -21,6 +21,7 @@ before(async () => {
       unauthorized: [401, 'application/json', '{"error":"Sesión de administrador requerida"}'],
       denied: [403, 'application/json', '{}'], backend: [503, 'application/json', '{"error":"Almacén no disponible: error real del servidor"}'],
     };
+    if (name === 'gone') { res.statusCode = 404; res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('X-Vercel-Error', 'DEPLOYMENT_NOT_FOUND'); return res.end('The deployment could not be found on Vercel.'); }
     const [status, type, body] = responses[name] ?? [404, 'application/json', '{"error":"Ruta desconocida"}'];
     res.statusCode = status; if (type) res.setHeader('Content-Type', type); res.end(body);
   });
@@ -47,6 +48,13 @@ test('authorization errors and real backend messages are preserved', async () =>
   await assert.rejects(api.apiRequest('unauthorized'), { status: 401, message: 'Sesión de administrador requerida' });
   await assert.rejects(api.apiRequest('denied'), error => error.status === 403 && /autorización/.test(error.message));
   await assert.rejects(api.apiRequest('backend'), { status: 503, message: 'Almacén no disponible: error real del servidor' });
+});
+test('a removed Vercel deployment URL gets an explicit message pointing to the official domain', async () => {
+  await assert.rejects(api.apiRequest('gone'), error => error.status === 404 && error.code === 'DEPLOYMENT_NOT_FOUND' && error.message.includes('https://cuestionario-bisa1.vercel.app/'));
+  // The administrator modal on an old tab of a removed deployment.
+  globalThis.fetch = (url, options) => nativeFetch(new URL('/api/gone', base), options);
+  try { await assert.rejects(api.loginAdmin('x'), error => /ya no existe/.test(error.message) && !/proxy de desarrollo|npm run dev/.test(error.message)); }
+  finally { globalThis.fetch = (url, options) => nativeFetch(new URL(url, base), options); }
 });
 test('disabled storage returns actual valid JSON 503, not a fake empty matrix', async () => {
   await assert.rejects(api.apiRequest('matrices?type=nuevo-ingreso'), error => error.status === 503 && /sin habilitar/.test(error.message));
